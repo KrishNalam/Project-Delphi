@@ -1,25 +1,7 @@
 import './App.css';
 import React, { useState, useEffect } from 'react';
 
-type UserData = {
-	name: string;
-	email: string;
-	phone: string;
-	address: string;
-	linkedin: string;
-	github: string;
-	portfolio: string;
-};
-
-const defaultUserData: UserData = {
-	name: '',
-	email: '',
-	phone: '',
-	address: '',
-	linkedin: '',
-	github: '',
-	portfolio: '',
-};
+const fields = ['fname', 'lname', 'email', 'phone', 'linkedin', 'github', 'portfolio'];
 
 function App() {
 	const handleClick = () => {
@@ -29,18 +11,32 @@ function App() {
 			}
 		});
 	};
-
+	const [formData, setFormData] = useState<{ [key: string]: string }>({});
+	useEffect(() => {
+		chrome.storage.local.get(fields, (data) => {
+			setFormData(data);
+		});
+	}, []);
+	const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+		const { name, value } = e.target;
+		const updated = { ...formData, [name]: value };
+		setFormData(updated);
+		chrome.storage.local.set({ [name]: value });
+	};
 	return (
 		<>
-			<form>
-				<input placeholder='First Name' type='text' id='fname' />
-				<input placeholder='Last Name' type='text' id='lname' />
-				<input placeholder='Email' type='text' id='email' />
-				<input placeholder='Phone' type='text' id='phone' />
-				<input placeholder='LinkedIn' type='text' id='linkedin' />
-				<input placeholder='GitHub' type='text' id='github' />
-				<input placeholder='Portfolio' type='text' id='portfolio' />
-			</form>
+			{/* <form>
+				{fields.map((field) => (
+					<input
+						key={field}
+						name={field}
+						placeholder={field.charAt(0).toUpperCase() + field.slice(1)}
+						type='text'
+						value={formData[field] || ''}
+						onChange={handleChange}
+					/>
+				))}
+			</form> */}
 			<div className='card'>
 				<button onClick={handleClick}>Autofill</button>
 			</div>

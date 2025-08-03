@@ -1,7 +1,6 @@
 export default defineContentScript({
 	matches: ['<all_urls>'],
 	main() {
-		console.log('Hello content.');
 		chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 			if (message.command === 'autofill') {
 				getInputField();
@@ -11,15 +10,7 @@ export default defineContentScript({
 	},
 });
 
-const userData = {
-	name: 'Krish Nalam',
-	email: 'nalamkrish1@gmail.com',
-	phone: '6474675666',
-	address: '107 Baycliffe Drive',
-	linkedin: 'https://www.linkedin.com/in/KrishNalam',
-	github: 'https://www.github.com/KrishNalam',
-	portfolio: 'https://krishnalam.com',
-};
+const storageKeys = ['fname', 'lname', 'email', 'phone', 'linkedin', 'github', 'portfolio'];
 
 function getLabelText(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string {
 	// Same as before, example helper (optional)
@@ -33,21 +24,26 @@ function getLabelText(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelect
 }
 
 function getInputField() {
-	const fields = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
-		'input:not([type=hidden]):not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly]), select:not([disabled])'
-	);
-	fields.forEach((field) => {
-		const label = getLabelText(field);
-		const placeholder = field.getAttribute('placeholder') || '';
-		const ariaLabel = field.getAttribute('aria-label') || '';
-		const name = field.getAttribute('name') || '';
-		const id = field.id || '';
-		const prev = field.previousElementSibling;
-		const siblingText = prev instanceof HTMLElement ? prev.innerText.trim() : '';
+	chrome.storage.local.get(storageKeys, (userData) => {
+		const fields = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+			'input:not([type=hidden]):not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly]), select:not([disabled])'
+		);
+		fields.forEach((field) => {
+			const label = getLabelText(field);
+			const placeholder = field.getAttribute('placeholder') || '';
+			const ariaLabel = field.getAttribute('aria-label') || '';
+			const name = field.getAttribute('name') || '';
+			const id = field.id || '';
+			const prev = field.previousElementSibling;
+			const siblingText = prev instanceof HTMLElement ? prev.innerText.trim() : '';
 
-		const combined = [label, placeholder, ariaLabel, name, id, siblingText].filter(Boolean).join(' ').toLowerCase();
+			const combined = [label, placeholder, ariaLabel, name, id, siblingText]
+				.filter(Boolean)
+				.join(' ')
+				.toLowerCase();
 
-		fillInputField(field, combined);
+			fillInputField(field, combined, userData);
+		});
 	});
 }
 
@@ -55,13 +51,21 @@ function matchesKeywords(text: string, keywords: string[]) {
 	return keywords.some((kw) => text.includes(kw.toLowerCase()));
 }
 
-function fillInputField(field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, combined: string) {
+function fillInputField(
+	field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+	combined: string,
+	userData: Record<string, string>
+) {
 	if (matchesKeywords(combined, ['email'])) {
 		(field as HTMLInputElement).value = userData.email;
 	} else if (matchesKeywords(combined, ['phone', 'mobile', 'tel'])) {
 		(field as HTMLInputElement).value = userData.phone;
+	} else if (matchesKeywords(combined, ['first'])) {
+		(field as HTMLInputElement).value = userData.fname;
+	} else if (matchesKeywords(combined, ['last'])) {
+		(field as HTMLInputElement).value = userData.lname;
 	} else if (matchesKeywords(combined, ['name'])) {
-		(field as HTMLInputElement).value = userData.name;
+		(field as HTMLInputElement).value = userData.fname + ' ' + userData.lname;
 	} else if (matchesKeywords(combined, ['address', 'street', 'city', 'zip', 'postal'])) {
 		(field as HTMLInputElement).value = userData.address;
 	} else if (matchesKeywords(combined, ['portfolio'])) {
