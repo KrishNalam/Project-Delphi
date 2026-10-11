@@ -1,0 +1,36 @@
+# Copy to profile.yaml (gitignored). This is what forms get filled from.
+first_name:
+last_name:
+email:
+phone:
+city: Toronto, ON, Canada
+linkedin:
+github:
+website:
+
+school: University of Toronto
+degree:
+major:
+grad_date:        # e.g. 2028-04
+gpa:
+
+work_auth:
+  canada: Authorized to work, no sponsorship needed
+  usa: Requires visa sponsorship
+needs_us_sponsorship: true   # drops US postings that say they won't sponsor
+
+search_terms:     # LinkedIn / Indeed searches
+  - software engineering intern
+  - software developer co-op
+  - machine learning intern
+  - data science intern
+
+# Voluntary self-identification. Blank = "decline to answer".
+eeo:
+  gender:
+  race:
+  veteran:
+  disability:
+
+resume_text: |
+  Paste your resume as plain text. Used for ranking jobs and answering short questions.
