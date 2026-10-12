@@ -6,6 +6,8 @@ import re
 import time
 import urllib.request
 
+from config import PROFILE
+
 log = logging.getLogger(__name__)
 
 REPOS = ["SimplifyJobs/Summer2027-Internships", "vanshb03/Summer2027-Internships"]
@@ -22,6 +24,7 @@ STATE_NAMES = {
     "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", "texas",
     "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming",
 }
+SEARCH_COUNTRY = {"canada": ("Canada", "Canada"), "usa": ("United States", "USA")}  # (location, Indeed country)
 
 
 def country_of(location):
@@ -63,4 +66,26 @@ def github_repos():
             if x.get("active") and x.get("is_visible", True) and x.get("date_posted", 0) >= cutoff:
                 jobs.append(_job(repo.split("/")[0], x["company_name"], x["title"], x.get("locations", []),
                                  x["url"], x["date_posted"], x.get("sponsorship", "Other")))
+    return jobs
+
+
+def jobspy_jobs(countries):
+    """LinkedIn + Indeed via python-jobspy. Guest listings only, we never log in to LinkedIn."""
+    from jobspy import scrape_jobs  # pulls in pandas, so only import when used
+
+    jobs = []
+    for country in countries:
+        location, indeed_country = SEARCH_COUNTRY[country]
+        for term in PROFILE.get("search_terms", ["software engineering intern"]):
+            try:
+                df = scrape_jobs(site_name=["linkedin", "indeed"], search_term=term, location=location,
+                                 country_indeed=indeed_country, results_wanted=25, hours_old=72)
+            except Exception as e:
+                log.warning("jobspy %s / %s: %s", country, term, e)
+                continue
+            for r in df.fillna("").to_dict("records"):
+                # Prefer the company's own posting so we apply there, not through LinkedIn.
+                url = r.get("job_url_direct") or r["job_url"]
+                jobs.append(_job(r["site"], r["company"], r["title"], [r["location"]], url,
+                                 description=str(r.get("description", "")), countries=[country]))
     return jobs
