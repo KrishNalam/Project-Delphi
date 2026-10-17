@@ -1,7 +1,9 @@
 """Telegram bot and daily digest. Run: python bot.py"""
 import asyncio
 import logging
+from datetime import datetime
 from html import escape
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, filters
@@ -11,9 +13,12 @@ import sources
 from config import PROFILE, env
 from filters import keep
 from store import already_applied, get_job, get_setting, is_seen, save_job, set_status
+from store import set_setting
 
 log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
+TZ = ZoneInfo(env("DELPHI_TZ", "America/Toronto"))
+DIGEST_HOUR = int(env("DIGEST_HOUR", "8"))
 
 
 def find_jobs():
@@ -43,6 +48,16 @@ async def send_digest(app):
             parse_mode="HTML", disable_web_page_preview=True,
             reply_markup=Keyboard([[Button("Apply", callback_data=f"apply:{job['id']}"),
                                     Button("Skip", callback_data=f"skip:{job['id']}")]]))
+
+
+async def tick(ctx):
+    """Hourly. Sends the day's digest once: at DIGEST_HOUR, or on the first tick after (machine was asleep)."""
+    now = datetime.now(TZ)
+    today = now.date().isoformat()
+    if get_setting("paused") or now.hour < DIGEST_HOUR or get_setting("last_digest") == today:
+        return
+    set_setting("last_digest", today)
+    await send_digest(ctx.application)
 
 
 async def cmd_start(update, ctx):
@@ -81,6 +96,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest, me))
     app.add_handler(CallbackQueryHandler(on_button))
+    app.job_queue.run_repeating(tick, interval=3600, first=10)
     app.run_polling()
 
 

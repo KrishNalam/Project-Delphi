@@ -1,0 +1,13 @@
+[Unit]
+Description=Project Delphi internship bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/Projects/Project-Delphi
+ExecStart=%h/Projects/Project-Delphi/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target
