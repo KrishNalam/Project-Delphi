@@ -5,8 +5,10 @@ import logging
 import re
 import time
 import urllib.request
+from datetime import datetime, timedelta, timezone
+from html import unescape
 
-from config import PROFILE
+from config import PROFILE, env
 
 log = logging.getLogger(__name__)
 
@@ -89,3 +91,34 @@ def jobspy_jobs(countries):
                 jobs.append(_job(r["site"], r["company"], r["title"], [r["location"]], url,
                                  description=str(r.get("description", "")), countries=[country]))
     return jobs
+
+
+def _text(html):
+    return unescape(re.sub(r"<[^>]+>", " ", html or ""))
+
+
+def canvas_jobs():
+    """Job posts from Quercus (Canvas) announcements and pages changed in the last 2 days."""
+    base, token, courses = env("CANVAS_URL"), env("CANVAS_TOKEN"), env("CANVAS_COURSE_IDS", "")
+    if not (base and token and courses):
+        return []
+    import llm
+
+    api, headers = f"{base.rstrip('/')}/api/v1", {"Authorization": f"Bearer {token}"}
+    since = datetime.now(timezone.utc) - timedelta(days=2)
+    texts = []
+    for course in (c.strip() for c in courses.split(",")):
+        try:
+            for a in _get_json(f"{api}/announcements?context_codes[]=course_{course}&start_date={since.date()}",
+                               headers):
+                texts.append(f"{a['title']}\n{_text(a['message'])}")
+            for p in _get_json(f"{api}/courses/{course}/pages?sort=updated_at&order=desc&per_page=20", headers):
+                if datetime.fromisoformat(p["updated_at"].replace("Z", "+00:00")) >= since:
+                    page = _get_json(f"{api}/courses/{course}/pages/{p['url']}", headers)
+                    texts.append(f"{page['title']}\n{_text(page.get('body'))}")
+        except Exception as e:
+            log.warning("canvas course %s: %s", course, e)
+    if not texts:
+        return []
+    postings = llm.extract_jobs("\n\n---\n\n".join(texts))
+    return [_job("quercus", p.company, p.title, [p.location], p.url) for p in postings if p.url]

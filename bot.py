@@ -23,7 +23,7 @@ DIGEST_HOUR = int(env("DIGEST_HOUR", "8"))
 
 def find_jobs():
     countries = get_setting("countries")
-    found = sources.github_repos() + sources.jobspy_jobs(countries)
+    found = sources.github_repos() + sources.jobspy_jobs(countries) + sources.canvas_jobs()
     fresh = {}
     for job in found:
         if is_seen(job["id"]):

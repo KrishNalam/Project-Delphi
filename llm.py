@@ -49,3 +49,21 @@ def rank(jobs, n):
         f"an interview at. Score each 0-10 and give a one-line reason (max 15 words). Best first.\n\n{listing}",
         Ranking).picks
     return [dict(jobs[p.index], score=p.score, why=p.why) for p in picks if 0 <= p.index < len(jobs)][:n]
+
+
+class Posting(BaseModel):
+    company: str
+    title: str
+    location: str
+    url: str
+
+
+class Postings(BaseModel):
+    postings: list[Posting]
+
+
+def extract_jobs(text):
+    """Job/internship postings mentioned in free text (Quercus pages and announcements)."""
+    return _ask("Extract every job or internship posting from these course pages. Use the application link as url "
+                "(empty string if there is none). Return an empty list if there are no postings.\n\n" + text,
+                Postings).postings
