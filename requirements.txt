@@ -2,3 +2,4 @@ pyyaml>=6.0
 python-jobspy>=1.4
 anthropic>=2.3
 python-telegram-bot[job-queue]>=22.0
+playwright>=1.50
