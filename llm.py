@@ -1,4 +1,5 @@
 """Every Claude call lives here. Set DELPHI_MODEL in .env to change the model."""
+import json
 from functools import cache
 
 import anthropic
@@ -67,3 +68,33 @@ def extract_jobs(text):
     return _ask("Extract every job or internship posting from these course pages. Use the application link as url "
                 "(empty string if there is none). Return an empty list if there are no postings.\n\n" + text,
                 Postings).postings
+
+
+class Fill(BaseModel):
+    index: int
+    value: str
+
+
+class FormPlan(BaseModel):
+    fills: list[Fill]
+    unknown: list[int]
+
+
+def map_fields(job, fields, answers):
+    """What to put in each form field. Required fields we can't answer truthfully come back in `unknown`."""
+    profile = {k: v for k, v in PROFILE.items() if k not in ("resume_text", "search_terms")}
+    return _ask(
+        f"You are filling out a job application for {job['title']} at {job['company']}.\n\n"
+        f"Applicant profile: {json.dumps(profile, default=str)}\n\n"
+        f"Resume:\n{PROFILE.get('resume_text', '')}\n\n"
+        f"Answers the applicant gave to earlier application questions: {json.dumps(answers)}\n\n"
+        f"Form fields: {json.dumps(fields)}\n\n"
+        "Rules:\n"
+        "- Only use facts from the profile, resume or earlier answers. Never invent facts.\n"
+        "- For fields with options, value must be exactly one of the options "
+        "(checkbox groups: comma-separate several).\n"
+        "- Self-identification questions with no profile answer: pick the decline/prefer-not-to-say option.\n"
+        "- Short free-text questions like 'why this company': 2-3 honest sentences grounded in the resume.\n"
+        "- Skip file fields. Skip optional fields you can't answer.\n"
+        "- Put the index of every required field you can't answer from these facts in `unknown`.",
+        FormPlan)

@@ -5,12 +5,17 @@ Debug: python apply.py <job url>  prints the form fields the bot sees.
 """
 import asyncio
 import json
+import logging
 import re
 import sys
 
 from playwright.async_api import async_playwright
 
-from config import env
+import llm
+from config import ROOT, env
+
+log = logging.getLogger(__name__)
+ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
 SUPPORTED = re.compile(r"greenhouse\.io")
 
 # Tags every visible form control with data-delphi=<index> and describes it for the LLM.
@@ -75,6 +80,49 @@ async def _open(p, url):
 async def fields_of(url):
     async with async_playwright() as p:
         return (await _open(p, url))[1]
+
+
+async def _fill(page, field, value):
+    el = page.locator(f'[data-delphi="{field["index"]}"]')
+    kind = field["type"]
+    if kind.startswith("select"):
+        await el.select_option(label=value)
+    elif kind == "yesno":
+        await el.get_by_role("button", name=value.strip(), exact=True).click()
+    elif kind in ("radio", "checkbox"):
+        group = page.locator(f'input[type={kind}][name="{field["name"]}"]') if field["name"] else el
+        wanted = {v.strip().lower() for v in value.split(",")}
+        single_yes = len(field["options"]) == 1 and value.strip().lower() in ("yes", "true")
+        for i, option in enumerate(field["options"]):
+            if option.lower() in wanted or single_yes:
+                await group.nth(i).check(force=True)
+    else:
+        await el.fill(value)
+
+
+def _question(field):
+    options = f" [{' / '.join(field['options'])}]" if field["options"] else ""
+    return field["label"] + options
+
+
+async def apply(job):
+    """Fill the form from your profile. Returns 'filled', or 'handoff' when it's not a site we handle."""
+    if not SUPPORTED.search(job["url"]):
+        return "handoff"
+    answers = json.loads(ANSWERS.read_text()) if ANSWERS.exists() else {}
+    async with async_playwright() as p:
+        page, fields = await _open(p, job["url"])
+        if not fields:
+            return "handoff"
+        plan = await asyncio.to_thread(llm.map_fields, job, fields, answers)
+        values = {f.index: f.value for f in plan.fills
+                  if 0 <= f.index < len(fields) and fields[f.index]["type"] != "file"}
+        for i, value in values.items():
+            try:
+                await _fill(page, fields[i], value)
+            except Exception as e:  # one stubborn widget shouldn't sink the form; the screenshot shows it
+                log.warning("fill %r: %s", fields[i]["label"], e)
+        return "filled"
 
 
 if __name__ == "__main__":
