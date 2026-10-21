@@ -2,6 +2,7 @@
 import tempfile
 from pathlib import Path
 
+from bot import parse_answers
 from filters import keep
 from sources import _job, country_of
 from store import already_applied, log_application
@@ -46,6 +47,12 @@ def test_already_applied():
     # Same role reposted under another URL still counts; a different role doesn't.
     assert already_applied(_job("test", "ACME corp", "SWE Intern ", [], "https://other.com/2"), path)
     assert already_applied(_job("test", "Acme Corp", "Data Intern", [], "https://acme.com/jobs/3"), path) is None
+
+
+def test_parse_answers():
+    assert parse_answers("1. Yes\n2) 2028-04", 2) == ["Yes", "2028-04"]
+    assert parse_answers("just one", 1) == ["just one"]
+    assert parse_answers("1. only one", 2) is None
 
 
 if __name__ == "__main__":

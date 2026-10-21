@@ -1,13 +1,15 @@
 """Telegram bot and daily digest. Run: python bot.py"""
 import asyncio
 import logging
+import re
 from datetime import datetime
 from html import escape
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
+import apply
 import llm
 import sources
 from config import PROFILE, env
@@ -19,6 +21,8 @@ log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
 TZ = ZoneInfo(env("DELPHI_TZ", "America/Toronto"))
 DIGEST_HOUR = int(env("DIGEST_HOUR", "8"))
+pending = None  # (kind, Future) the running application is waiting on: "text" reply or "confirm" tap
+apply_lock = asyncio.Lock()  # one application at a time so replies can't get crossed
 
 
 def find_jobs():
@@ -60,6 +64,45 @@ async def tick(ctx):
     await send_digest(ctx.application)
 
 
+def parse_answers(text, n):
+    """'1. foo\\n2) bar' -> ['foo', 'bar']. None unless there are exactly n answers."""
+    lines = [re.sub(r"^\s*\d+[.)]\s*", "", line).strip() for line in text.splitlines() if line.strip()]
+    return lines if len(lines) == n else None
+
+
+async def _wait(kind):
+    global pending
+    pending = (kind, asyncio.get_running_loop().create_future())
+    try:
+        return await asyncio.wait_for(pending[1], timeout=6 * 3600)
+    finally:
+        pending = None
+
+
+async def run_apply(job, bot):
+    async with apply_lock:
+        await bot.send_message(CHAT_ID, f"Applying to {job['title']} @ {job['company']}…")
+
+        async def ask(questions):
+            numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
+            await bot.send_message(CHAT_ID, f"I need a few answers (one numbered line each):\n{numbered}")
+            while not (answers := parse_answers(await _wait("text"), len(questions))):
+                await bot.send_message(CHAT_ID, f"I need exactly {len(questions)} numbered answers, try again.")
+            await bot.send_message(CHAT_ID, "Got it, saved for next time.")
+            return answers
+
+        try:
+            status = await apply.apply(job, ask)
+        except Exception:
+            log.exception("applying to %s", job["url"])
+            status = "failed"
+        set_status(job["id"], status)
+        if status == "filled":
+            await bot.send_message(CHAT_ID, "Form filled (submitting isn't wired up yet).")
+        else:
+            await bot.send_message(CHAT_ID, f"Couldn't fill this one ({status}), apply here:\n{job['url']}")
+
+
 async def cmd_start(update, ctx):
     await update.message.reply_text(f"Your chat id is {update.effective_chat.id}. Put it in .env as TELEGRAM_CHAT_ID.")
 
@@ -84,8 +127,12 @@ async def on_button(update, ctx):
     elif row := already_applied(job):
         await q.message.reply_text(f"You already applied to this on {row['date']}.")
     else:
-        set_status(arg, "interested")
-        await q.message.reply_text(f"Saved. Auto-apply isn't built yet, apply here:\n{job['url']}")
+        ctx.application.create_task(run_apply(job, ctx.bot))
+
+
+async def on_text(update, ctx):
+    if pending and pending[0] == "text":
+        pending[1].set_result(update.message.text)
 
 
 def main():
@@ -96,6 +143,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest, me))
     app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))
     app.job_queue.run_repeating(tick, interval=3600, first=10)
     app.run_polling()
 

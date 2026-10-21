@@ -105,8 +105,11 @@ def _question(field):
     return field["label"] + options
 
 
-async def apply(job):
-    """Fill the form from your profile. Returns 'filled', or 'handoff' when it's not a site we handle."""
+async def apply(job, ask):
+    """Fill the form, asking you (ask(questions) -> answers) for anything unknown.
+
+    Returns 'filled', or 'handoff' when it's not a site we handle.
+    """
     if not SUPPORTED.search(job["url"]):
         return "handoff"
     answers = json.loads(ANSWERS.read_text()) if ANSWERS.exists() else {}
@@ -117,6 +120,11 @@ async def apply(job):
         plan = await asyncio.to_thread(llm.map_fields, job, fields, answers)
         values = {f.index: f.value for f in plan.fills
                   if 0 <= f.index < len(fields) and fields[f.index]["type"] != "file"}
+        unknown = [i for i in plan.unknown if 0 <= i < len(fields) and i not in values]
+        if unknown:
+            for i, reply in zip(unknown, await ask([_question(fields[i]) for i in unknown]), strict=True):
+                values[i] = answers[fields[i]["label"]] = reply
+            ANSWERS.write_text(json.dumps(answers, indent=1))
         for i, value in values.items():
             try:
                 await _fill(page, fields[i], value)
