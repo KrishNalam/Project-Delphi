@@ -25,6 +25,8 @@ search_terms:     # LinkedIn / Indeed searches
   - machine learning intern
   - data science intern
 
+resume_pdf: /home/krish/resume.pdf
+
 # Voluntary self-identification. Blank = "decline to answer".
 eeo:
   gender:

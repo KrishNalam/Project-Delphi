@@ -1,6 +1,7 @@
 """Fill out (and submit) an application in a real browser with Playwright.
 
-Greenhouse forms only for now. Anything else is handed back to you as a link.
+Greenhouse, Lever and Ashby forms are handled. Anything else (Workday, iCIMS, ...) is
+handed back to you as a link.
 Debug: python apply.py <job url>  prints the form fields the bot sees.
 """
 import asyncio
@@ -12,11 +13,11 @@ import sys
 from playwright.async_api import async_playwright
 
 import llm
-from config import ROOT, env
+from config import PROFILE, ROOT, env
 
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
-SUPPORTED = re.compile(r"greenhouse\.io")
+SUPPORTED = re.compile(r"greenhouse\.io|lever\.co|ashbyhq\.com")
 
 # Tags every visible form control with data-delphi=<index> and describes it for the LLM.
 EXTRACT_JS = r"""
@@ -70,10 +71,20 @@ EXTRACT_JS = r"""
 """
 
 
+def apply_url(url):
+    """The page that actually has the form."""
+    base = url.split("?")[0].rstrip("/")
+    if "lever.co" in base and not base.endswith("/apply"):
+        return base + "/apply"
+    if "ashbyhq.com" in base and not base.endswith("/application"):
+        return base + "/application"
+    return url
+
+
 async def _open(p, url):
     browser = await p.chromium.launch(headless=env("HEADLESS", "1") == "1")
     page = await browser.new_page()
-    await page.goto(url, wait_until="networkidle", timeout=60000)
+    await page.goto(apply_url(url), wait_until="networkidle", timeout=60000)
     return page, await page.evaluate(EXTRACT_JS)
 
 
@@ -87,6 +98,13 @@ async def _fill(page, field, value):
     kind = field["type"]
     if kind.startswith("select"):
         await el.select_option(label=value)
+    elif kind == "combobox":
+        # ponytail: types + Enter takes the first match without reading the options; the confirm
+        # screenshot is where a wrong pick gets caught. Read the listbox if this misfires a lot.
+        await el.click()
+        await el.fill(value)
+        await page.wait_for_timeout(500)
+        await el.press("Enter")
     elif kind == "yesno":
         await el.get_by_role("button", name=value.strip(), exact=True).click()
     elif kind in ("radio", "checkbox"):
@@ -130,6 +148,11 @@ async def apply(job, ask):
                 await _fill(page, fields[i], value)
             except Exception as e:  # one stubborn widget shouldn't sink the form; the screenshot shows it
                 log.warning("fill %r: %s", fields[i]["label"], e)
+        # Resume goes in the required upload if there is one, else the one labelled resume/CV, else the first.
+        files = sorted((f for f in fields if f["type"] == "file"),
+                       key=lambda f: (not f["required"], not re.search(r"resume|cv", f["label"], re.I)))
+        if files:
+            await page.locator(f'[data-delphi="{files[0]["index"]}"]').set_input_files(PROFILE["resume_pdf"])
         return "filled"
 
 
