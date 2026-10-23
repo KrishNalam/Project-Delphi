@@ -18,6 +18,8 @@ from config import PROFILE, ROOT, env
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
 SUPPORTED = re.compile(r"greenhouse\.io|lever\.co|ashbyhq\.com")
+SUCCESS = re.compile(r"thank(s| you) for (applying|your application|your interest)|application (has been )?"
+                     r"(received|submitted)|successfully submitted", re.I)
 
 # Tags every visible form control with data-delphi=<index> and describes it for the LLM.
 EXTRACT_JS = r"""
@@ -123,10 +125,10 @@ def _question(field):
     return field["label"] + options
 
 
-async def apply(job, ask):
-    """Fill the form, asking you (ask(questions) -> answers) for anything unknown.
+async def apply(job, ask, confirm):
+    """Fill and submit. Returns 'submitted', 'unconfirmed', 'cancelled' or 'handoff' (you finish it).
 
-    Returns 'filled', or 'handoff' when it's not a site we handle.
+    ask(questions) -> answers and confirm(png) -> bool are async callbacks into the Telegram bot.
     """
     if not SUPPORTED.search(job["url"]):
         return "handoff"
@@ -153,7 +155,12 @@ async def apply(job, ask):
                        key=lambda f: (not f["required"], not re.search(r"resume|cv", f["label"], re.I)))
         if files:
             await page.locator(f'[data-delphi="{files[0]["index"]}"]').set_input_files(PROFILE["resume_pdf"])
-        return "filled"
+        if not await confirm(await page.screenshot(full_page=True)):
+            return "cancelled"
+        await page.locator("button[type=submit], input[type=submit], button:has-text('Submit')").first.click()
+        await page.wait_for_timeout(6000)
+        # No thank-you page usually means a CAPTCHA popped up or a field was rejected.
+        return "submitted" if SUCCESS.search(await page.inner_text("body")) else "unconfirmed"
 
 
 if __name__ == "__main__":

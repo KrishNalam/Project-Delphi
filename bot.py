@@ -14,7 +14,7 @@ import llm
 import sources
 from config import PROFILE, env
 from filters import keep
-from store import already_applied, get_job, get_setting, is_seen, save_job, set_status
+from store import already_applied, get_job, get_setting, is_seen, log_application, save_job, set_status
 from store import set_setting
 
 log = logging.getLogger("delphi")
@@ -91,16 +91,33 @@ async def run_apply(job, bot):
             await bot.send_message(CHAT_ID, "Got it, saved for next time.")
             return answers
 
+        async def confirm(png):
+            if env("CONFIRM_BEFORE_SUBMIT", "1") != "1":
+                return True
+            await bot.send_document(
+                CHAT_ID, png, filename="application.png", caption="Submit this?",
+                reply_markup=Keyboard([[Button("Submit", callback_data="confirm:yes"),
+                                        Button("Cancel", callback_data="confirm:no")]]))
+            return await _wait("confirm")
+
         try:
-            status = await apply.apply(job, ask)
+            status = await apply.apply(job, ask, confirm)
         except Exception:
             log.exception("applying to %s", job["url"])
             status = "failed"
         set_status(job["id"], status)
-        if status == "filled":
-            await bot.send_message(CHAT_ID, "Form filled (submitting isn't wired up yet).")
+        if status == "submitted":
+            log_application(job, "submitted")
+            await bot.send_message(CHAT_ID, f"Submitted ✅ {job['title']} @ {job['company']}")
+        elif status == "cancelled":
+            await bot.send_message(CHAT_ID, "Cancelled, nothing was submitted.")
         else:
-            await bot.send_message(CHAT_ID, f"Couldn't fill this one ({status}), apply here:\n{job['url']}")
+            reason = {"handoff": "I can't fill this site automatically",
+                      "unconfirmed": "I clicked submit but couldn't confirm it went through (often a CAPTCHA)",
+                      "failed": "Something broke while filling the form"}[status]
+            await bot.send_message(
+                CHAT_ID, f"{reason}. Finish it here:\n{job['url']}",
+                reply_markup=Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}")]]))
 
 
 async def cmd_start(update, ctx):
@@ -118,12 +135,21 @@ async def on_button(update, ctx):
     if q.message.chat.id != CHAT_ID:
         return
     action, _, arg = q.data.partition(":")
+    if action == "confirm":
+        if pending and pending[0] == "confirm":
+            pending[1].set_result(arg == "yes")
+        await q.edit_message_reply_markup(None)
+        return
     job = get_job(arg)
     if not job:
         return
     await q.edit_message_reply_markup(None)
     if action == "skip":
         set_status(arg, "skipped")
+    elif action == "done":
+        log_application(job, "manual")
+        set_status(arg, "manual")
+        await q.message.reply_text("Logged in applied.csv.")
     elif row := already_applied(job):
         await q.message.reply_text(f"You already applied to this on {row['date']}.")
     else:
