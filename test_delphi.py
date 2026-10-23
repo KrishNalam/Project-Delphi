@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 from bot import parse_answers
-from filters import keep
+from filters import NO_SPONSOR, keep
 from sources import _job, country_of
 from store import already_applied, log_application
 
@@ -36,6 +36,13 @@ def test_keep():
     # Sponsorship only matters for the US side of a multi-country posting.
     assert keep(job(sponsorship="U.S. Citizenship is Required", locations=["Austin, TX", "Toronto, ON"]), both)
     assert keep(job(locations=["Remote"]), ["canada"])
+
+
+def test_no_sponsor_phrases():
+    for s in ["No sponsorship available", "We will not provide sponsorship", "Must be a U.S. citizen",
+              "without the need for current or future visa sponsorship", "Requires an active security clearance"]:
+        assert NO_SPONSOR.search(s), s
+    assert not NO_SPONSOR.search("We offer visa sponsorship to interns.")
 
 
 def test_already_applied():
