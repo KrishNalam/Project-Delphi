@@ -5,6 +5,7 @@ fill_form(). Anything else (iCIMS, Oracle, ...) is handed back to you as a link.
 Debug: python apply.py <job url>  prints the form fields the bot sees.
 """
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -41,8 +42,10 @@ EXTRACT_JS = r"""
   for (const el of document.querySelectorAll('input, select, textarea, button[aria-haspopup="listbox"]')) {
     const auto = el.getAttribute('data-automation-id') || '';  // Workday's stable field ids
     if (auto === 'beecatcher') continue;  // Workday's honeypot: filling it flags you as a bot
+    if (auto === 'utilityMenuButton') continue;  // Workday's header Settings/account menus
     const type = el.tagName === 'BUTTON' ? 'listbox'  // Workday-style dropdown button
-      : el.getAttribute('role') === 'combobox' || auto === 'searchBox' ? 'combobox'
+      : el.getAttribute('role') === 'combobox' || auto === 'searchBox' || el.dataset.uxiWidgetType === 'selectinput'
+        ? 'combobox'
       : auto.startsWith('dateSection') ? 'datepart'
       : (el.type || el.tagName).toLowerCase();
     if (['hidden', 'submit', 'button', 'search', 'image', 'reset'].includes(type)) continue;
@@ -58,10 +61,18 @@ EXTRACT_JS = r"""
     }
     if (el.tagName === 'SELECT') options = [...el.options].map(o => clean(o.text)).filter(Boolean);
     const own = el.labels?.[0]?.innerText || el.getAttribute('aria-label') || byId(el.getAttribute('aria-labelledby'));
-    const grouped = members.length > 1 || el.tagName === 'SELECT' || type === 'file';
+    // Workday dropdown buttons name themselves "Select One Required": the question is in the wrapper instead.
+    const grouped = members.length > 1 || el.tagName === 'SELECT' || type === 'file' || type === 'listbox';
+    const skip = type === 'listbox' ? [el.innerText] : options;
     const f = {index: out.length, type, name: el.name || '', options,
-               label: clean((grouped ? '' : own) || near(el, members.length, options) || own || el.placeholder),
+               label: clean((grouped ? '' : own) || near(el, members.length, skip) || own || el.placeholder),
                required: el.required || el.getAttribute('aria-required') === 'true'};
+    // Already has a value (Workday prefills from the resume and from saved drafts): leave it alone.
+    const chips = el.parentElement.querySelector('[data-automation-id=promptAriaInstruction]');
+    f.filled = type === 'listbox' ? !/^select one/i.test(clean(el.innerText))
+      : chips ? !/^0 /.test(chips.innerText)
+      : type === 'radio' || type === 'checkbox' ? members.some(m => m.checked)
+      : type !== 'file' && !!el.value?.trim();
     if (type === 'datepart') f.label += ` (${auto.replace('dateSection', '').replace('-input', '')})`;  // (Month)
     if (f.label.endsWith('*')) f.required = true;
     el.setAttribute('data-delphi', f.index);
@@ -74,7 +85,8 @@ EXTRACT_JS = r"""
     const label = near(box, 0, ['Yes', 'No']);
     box.setAttribute('data-delphi', out.length);
     // required: Ashby only marks it in CSS, so assume it
-    out.push({index: out.length, type: 'yesno', name: '', options: ['Yes', 'No'], label, required: true});
+    out.push({index: out.length, type: 'yesno', name: '', options: ['Yes', 'No'], label, required: true,
+              filled: false});
   }
   return out;
 }
@@ -101,8 +113,26 @@ def resume_path():
 async def open_page(p, url):
     browser = await p.chromium.launch(headless=env("HEADLESS", "1") == "1")
     page = await browser.new_page()
+    page.set_default_timeout(10000)  # a widget that won't take a click fails fast instead of hanging 30s
     await page.goto(url, wait_until="networkidle", timeout=60000)
     return page
+
+
+async def _wait_count(locator, done, page):
+    for _ in range(30):
+        if done(await locator.count()):
+            return
+        await page.wait_for_timeout(100)
+
+
+async def _open_dropdown(page, el):
+    """Click a Workday dropdown button and return its popup's options. Closed popups stay in the page hidden,
+    and some lists (skill chips) are always visible, so the popup is the visible listbox that just appeared."""
+    popups = page.get_by_role("listbox").filter(visible=True)
+    before = await popups.count()
+    await el.click()
+    await _wait_count(popups, lambda n: n > before, page)
+    return popups.last.get_by_role("option"), before
 
 
 async def read_fields(page):
@@ -111,8 +141,7 @@ async def read_fields(page):
     for f in fields:
         if f["type"] == "listbox":
             try:
-                await page.locator(f'[data-delphi="{f["index"]}"]').click()
-                options = page.get_by_role("option")
+                options, _ = await _open_dropdown(page, page.locator(f'[data-delphi="{f["index"]}"]'))
                 await options.first.wait_for(timeout=3000)
                 f["options"] = [o.strip() for o in await options.all_inner_texts() if o.strip()]
             except Exception as e:
@@ -132,7 +161,8 @@ async def _fill(page, field, value):
     if kind.startswith("select"):
         await el.select_option(label=value)
     elif kind == "combobox":
-        # Search dropdowns load options as you type: click the first one containing the value, else press Enter.
+        # Search dropdowns load options as you type: click the first one containing the value. If none shows,
+        # press Enter: that picks the top match on most sites, and runs the search on Workday's prompts.
         await el.click()
         await el.fill(value)
         options = page.locator("[role=option], [data-automation-id=promptOption]")
@@ -141,9 +171,16 @@ async def _fill(page, field, value):
             await option.click(timeout=4000)
         except Exception:
             await el.press("Enter")
+            with contextlib.suppress(Exception):
+                await option.click(timeout=3000)
     elif kind == "listbox":
-        await el.click()
-        await page.get_by_role("option", name=value, exact=True).first.click(timeout=4000)
+        options, before = await _open_dropdown(page, el)
+        await options.first.wait_for(timeout=4000)
+        exact = options.filter(has_text=re.compile(f"^{re.escape(value.strip())}$", re.I))
+        # A short reply like "Bachelor" still finds "Bachelor's Degree".
+        await (exact if await exact.count() else options.filter(has_text=value.strip())).first.click()
+        # Wait for it to close, else the next dropdown's pick can land in this closing popup.
+        await _wait_count(page.get_by_role("listbox").filter(visible=True), lambda n: n <= before, page)
     elif kind == "datepart":  # Workday's split MM / DD / YYYY boxes only take keystrokes
         await el.click()
         await el.press_sequentially(value)
@@ -155,7 +192,10 @@ async def _fill(page, field, value):
         single_yes = len(field["options"]) == 1 and value.strip().lower() in ("yes", "true")
         for i, option in enumerate(field["options"]):
             if option.lower() in wanted or single_yes:
-                await group.nth(i).check(force=True)
+                try:
+                    await group.nth(i).check(force=True)
+                except Exception:  # Workday's styled-away checkboxes only respond to a real DOM click
+                    await group.nth(i).evaluate("e => e.checked || e.click()")
     else:
         await el.fill(value)
 
@@ -194,15 +234,10 @@ def _question(field):
     return field["label"] + options
 
 
-async def fill_form(page, job, ask, resume=None):
-    """Fill every field on the current page: known values first, then Claude, then you for what's left.
-
-    Returns the fields found (empty if the page has none). `resume` goes in the page's resume upload, if any.
-    """
-    answers = json.loads(ANSWERS.read_text()) if ANSWERS.exists() else {}
-    fields = await read_fields(page)
-    values = known_values(fields, answers)
-    rest = [f for f in fields if f["index"] not in values and f["type"] != "file"]
+async def _fill_fields(page, job, ask, fields, todo, answers):
+    """Fill `todo` (a subset of `fields`): known values first, then Claude, then you for what's left."""
+    values = known_values(todo, answers)
+    rest = [f for f in todo if f["index"] not in values and f["type"] != "file"]
     unknown = []
     if rest:  # only what we couldn't fill ourselves goes to Claude
         plan = await asyncio.to_thread(llm.map_fields, job, rest, answers)
@@ -218,12 +253,29 @@ async def fill_form(page, job, ask, resume=None):
             await _fill(page, fields[i], value)
         except Exception as e:  # one stubborn widget shouldn't sink the form; the screenshot shows it
             log.warning("fill %r: %s", fields[i]["label"], e)
+
+
+async def fill_form(page, job, ask, resume=None):
+    """Fill every field on the current page. Returns the fields found (empty if the page has none).
+
+    `resume` goes in the page's resume upload, if any.
+    """
+    answers = json.loads(ANSWERS.read_text()) if ANSWERS.exists() else {}
+    fields = await read_fields(page)
+    first, seen = fields, set()
+    for _ in range(3):  # an answer can reveal a follow-up question (e.g. a referrer's name), so look again
+        todo = [f for f in fields if (f["label"], f["type"]) not in seen and not f["filled"]]
+        if not todo:
+            break
+        seen |= {(f["label"], f["type"]) for f in todo}
+        await _fill_fields(page, job, ask, fields, todo, answers)
+        fields = await read_fields(page)
     # Resume goes in the required upload if there is one, else the one labelled resume/CV, else the first.
     files = sorted((f for f in fields if f["type"] == "file"),
                    key=lambda f: (not f["required"], not re.search(r"resume|cv", f["label"], re.I)))
     if resume and files:
         await page.locator(f'[data-delphi="{files[0]["index"]}"]').set_input_files(resume)
-    return fields
+    return first
 
 
 async def apply(job, ask, confirm, stuck):
