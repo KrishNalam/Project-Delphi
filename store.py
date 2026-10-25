@@ -13,7 +13,7 @@ create table if not exists jobs (id text primary key, data text, status text def
                                  seen_at text default current_timestamp);
 create table if not exists settings (key text primary key, value text);
 """)
-DEFAULTS = {"countries": ["canada", "usa"], "count": 8, "paused": False, "last_digest": ""}
+DEFAULTS = {"countries": ["canada", "usa"], "count": 8, "paused": False, "last_digest": "", "workday_accounts": []}
 
 
 def get_setting(key):

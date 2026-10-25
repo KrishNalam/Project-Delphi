@@ -12,6 +12,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Mess
 import apply
 import llm
 import sources
+import workday
 from config import PROFILE, env
 from filters import keep, relevance, words
 from store import (already_applied, applied_rows, get_job, get_setting, is_new, log_application, save_job,
@@ -143,7 +144,8 @@ async def run_apply(job, bot):
 
         error = ""
         try:
-            status = await apply.apply(job, ask, confirm, stuck)
+            site = workday if workday.handles(job["url"]) else apply
+            status = await site.apply(job, ask, confirm, stuck)
         except Exception as e:  # before the form opened: missing resume, page didn't load, ...
             log.exception("applying to %s", job["url"])
             status, error = "failed", str(e)[:300]

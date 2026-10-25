@@ -16,6 +16,7 @@ sources ─► filter ─► rank (Claude) ─► Telegram digest ─► [Apply]
 | Rules: internship/co-op titles, Canada/USA toggle, drops US postings that won't sponsor | `filters.py` |
 | Claude: ranking, Quercus extraction, mapping form fields to your profile | `llm.py` |
 | Browser autofill for Greenhouse, Lever, Ashby | `apply.py` |
+| Workday: account, sign-in, then the wizard page by page | `workday.py` |
 | Telegram bot and daily schedule | `bot.py` |
 | `delphi.db` (seen jobs, settings), `applied.csv` (applications) | `store.py` |
 
@@ -76,9 +77,12 @@ forms. Edit it freely.
 
 ## Limits
 
-- Only Greenhouse, Lever and Ashby are auto-filled. Workday, iCIMS, Oracle and SuccessFactors are
-  about half of all postings, and for those you get the link and an **I applied** button. Workday
-  needs an account per company; that's the next thing to build (an agent loop over multi-page forms).
+- Greenhouse, Lever, Ashby and Workday are auto-filled. iCIMS, Oracle and SuccessFactors aren't: you
+  get the link and an **I applied** button.
+- Workday: the bot makes an account on each company's Workday site with your email and
+  `WORKDAY_PASSWORD`. If a company emails a verification link, it asks you to click it. Work history
+  and education come from Workday's own resume parsing; if a page still rejects, the browser is left
+  open for you to finish.
 - If submit can't be confirmed (usually a CAPTCHA) you get the link to finish by hand.
 - LinkedIn is read as a guest only. The bot never logs in, and applies on the company's own site.
 

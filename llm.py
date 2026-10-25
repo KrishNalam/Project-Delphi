@@ -155,6 +155,7 @@ def map_fields(job, fields, answers):
         "(checkbox groups: comma-separate several).\n"
         "- Self-identification questions with no profile answer: pick the decline/prefer-not-to-say option.\n"
         "- Short free-text questions like 'why this company': 2-3 honest sentences grounded in the resume.\n"
+        "- GPA: fill it only when the field is required; leave optional GPA fields out.\n"
         "- Skip file fields. Skip optional fields you can't answer.\n"
         "- Put the index of every required field you can't answer from these facts in `unknown`."
     )
