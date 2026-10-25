@@ -2,6 +2,7 @@
 profile.yaml
 answers.json
 applied.csv
+usage.csv
 delphi.db
 .venv/
 __pycache__/

@@ -53,6 +53,7 @@ digest goes out within an hour of waking up.
 | `/count 5-10` | jobs per digest |
 | `/pause`, `/resume` | stop / restart the daily digest |
 | `/applied` | latest rows of `applied.csv` |
+| `/cost` | Claude spend: last 30 days, average per digest and per application |
 
 ## applied.csv
 
@@ -60,6 +61,13 @@ Every application gets a row: `date, company, title, location, url, source, stat
 `submitted` (the bot did it) or `manual` (you tapped **I applied** after finishing one yourself).
 Jobs are checked against this file before they're shown and again before applying, by URL and by
 company + title so reposts are caught. Add rows by hand for applications you sent elsewhere.
+
+## Cost
+
+Every Claude call is logged to `usage.csv` (tokens and dollars); `/cost` summarizes it.
+Ranking and Quercus scanning use Haiku at low effort on a keyword-shortlisted 60 jobs. Form
+filling uses Opus, but only for fields that aren't already known from your profile or saved
+answers, and the profile + resume part of that prompt is cached.
 
 ## Answers
 

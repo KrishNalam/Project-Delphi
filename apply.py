@@ -102,12 +102,14 @@ async def _fill(page, field, value):
     if kind.startswith("select"):
         await el.select_option(label=value)
     elif kind == "combobox":
-        # ponytail: types + Enter takes the first match without reading the options; the confirm
-        # screenshot is where a wrong pick gets caught. Read the listbox if this misfires a lot.
+        # Search dropdowns load options as you type: click the first one containing the value, else press Enter.
         await el.click()
         await el.fill(value)
-        await page.wait_for_timeout(500)
-        await el.press("Enter")
+        option = page.get_by_role("option").filter(has_text=re.compile(re.escape(value[:30]), re.I)).first
+        try:
+            await option.click(timeout=4000)
+        except Exception:
+            await el.press("Enter")
     elif kind == "yesno":
         await el.get_by_role("button", name=value.strip(), exact=True).click()
     elif kind in ("radio", "checkbox"):
@@ -119,6 +121,35 @@ async def _fill(page, field, value):
                 await group.nth(i).check(force=True)
     else:
         await el.fill(value)
+
+
+def _norm(label):
+    return re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+
+
+def known_values(fields, answers):
+    """{index: value} we can fill without Claude: obvious profile fields and exact repeats of saved answers."""
+    p = PROFILE
+    profile_fields = [
+        (r"^(legal )?first name", p.get("first_name")), (r"^(legal )?last name", p.get("last_name")),
+        (r"^(full |legal )?name$", f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()),
+        (r"^e ?mail( address)?$", p.get("email")), (r"^(phone|mobile)( number)?$", p.get("phone")),
+        (r"^linkedin( profile| url)?$", p.get("linkedin")), (r"^github( profile| url)?$", p.get("github")),
+        (r"^(portfolio|website|personal website)( url)?$", p.get("website")),
+    ]
+    saved = {_norm(label): str(answer) for label, answer in answers.items()}
+    values = {}
+    for f in fields:
+        label = _norm(f["label"])
+        if f["type"] in ("text", "email", "tel", "url"):
+            value = next((v for pattern, v in profile_fields if v and re.search(pattern, label)), None)
+            if value:
+                values[f["index"]] = str(value)
+                continue
+        answer = saved.get(label)
+        if answer and (not f["options"] or answer.lower() in (o.lower() for o in f["options"])):
+            values[f["index"]] = answer
+    return values
 
 
 def _question(field):
@@ -143,10 +174,14 @@ async def apply(job, ask, confirm, stuck):
         try:
             if not fields:
                 raise RuntimeError("found no form fields on the page")
-            plan = await asyncio.to_thread(llm.map_fields, job, fields, answers)
-            values = {f.index: f.value for f in plan.fills
-                      if 0 <= f.index < len(fields) and fields[f.index]["type"] != "file"}
-            unknown = [i for i in plan.unknown if 0 <= i < len(fields) and i not in values]
+            values = known_values(fields, answers)
+            rest = [f for f in fields if f["index"] not in values and f["type"] != "file"]
+            unknown = []
+            if rest:  # only what we couldn't fill ourselves goes to Claude
+                plan = await asyncio.to_thread(llm.map_fields, job, rest, answers)
+                asked = {f["index"] for f in rest}
+                values |= {f.index: f.value for f in plan.fills if f.index in asked}
+                unknown = [i for i in plan.unknown if i in asked and i not in values]
             if unknown:
                 for i, reply in zip(unknown, await ask([_question(fields[i]) for i in unknown]), strict=True):
                     values[i] = answers[fields[i]["label"]] = reply

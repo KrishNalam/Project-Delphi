@@ -13,7 +13,7 @@ import apply
 import llm
 import sources
 from config import PROFILE, env
-from filters import keep
+from filters import keep, relevance, words
 from store import (already_applied, applied_rows, get_job, get_setting, is_new, log_application, save_job,
                    set_setting, set_status)
 
@@ -36,9 +36,18 @@ def find_jobs():
         save_job(job)
         if keep(job, countries, PROFILE.get("needs_us_sponsorship", True)) and not already_applied(job):
             fresh[job["id"]] = job
-    # ponytail: only the newest 150 go to the ranker to bound cost; raise it if good jobs get cut
-    newest = sorted(fresh.values(), key=lambda j: j["posted"], reverse=True)[:150]
-    picks = llm.rank(newest, get_setting("count"))
+    # Only 60 keyword matches (newest first on ties) go to Claude, to keep ranking cheap. Same role posted
+    # twice counts once. Half the spots go to Canadian postings, since US ones need sponsorship.
+    resume_words = words(PROFILE.get("resume_text", ""))
+    ranked, roles = [], set()
+    for job in sorted(fresh.values(), key=lambda j: (relevance(j, resume_words), j["posted"]), reverse=True):
+        role = (job["company"].lower(), job["title"].lower())
+        if role not in roles:
+            roles.add(role)
+            ranked.append(job)
+    canadian = [j for j in ranked if "canada" in j["countries"]][:30]
+    shortlist = canadian + [j for j in ranked if j not in canadian][:60 - len(canadian)]
+    picks = llm.rank(shortlist, get_setting("count"))
     for job in picks:
         set_status(job["id"], "shown")
     return picks
@@ -187,6 +196,10 @@ async def cmd_resume(update, ctx):
     await update.message.reply_text("Resumed.")
 
 
+async def cmd_cost(update, ctx):
+    await update.message.reply_text(llm.usage_summary())
+
+
 async def cmd_applied(update, ctx):
     rows = applied_rows()
     lines = [f"{r['date']}  {r['company']} · {r['title']} ({r['status']})" for r in rows[-15:]]
@@ -234,7 +247,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest, me))
     for name, fn in [("country", cmd_country), ("count", cmd_count), ("pause", cmd_pause),
-                     ("resume", cmd_resume), ("applied", cmd_applied)]:
+                     ("resume", cmd_resume), ("applied", cmd_applied), ("cost", cmd_cost)]:
         app.add_handler(CommandHandler(name, fn, me))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))

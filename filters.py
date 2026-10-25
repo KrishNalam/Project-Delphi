@@ -22,3 +22,19 @@ def keep(job, countries, needs_us_sponsorship=True):
         job["sponsorship"] in BAD_SPONSORSHIP or NO_SPONSOR.search(job["description"])))
     places = set(job["countries"])
     return ("canada" in places and ca_ok) or ("usa" in places and us_ok) or (None in places and (ca_ok or us_ok))
+
+# Words every internship title shares; they say nothing about fit.
+GENERIC = {"intern", "interns", "internship", "co", "op", "coop", "student", "summer", "fall", "winter", "spring",
+           "and", "the", "of", "for", "to", "in", "with", "a", "an", "at", "on", "engineer", "engineering", "program",
+           "team", "new", "grad", "i", "ii", "iii", "us", "usa", "canada", "remote", "month", "months", "term"}
+
+
+def words(text):
+    return set(re.findall(r"[a-z][a-z0-9+#]*", text.lower())) - GENERIC
+
+
+def relevance(job, resume_words):
+    """Free pre-rank before Claude: how many title words appear in the resume."""
+    # ponytail: title-only keyword overlap; descriptions are missing for most listings and full of filler.
+    # Swap for embeddings if good jobs keep getting cut before ranking.
+    return len(words(job["title"]) & resume_words)
