@@ -49,9 +49,20 @@ async def _press(page, automation_id):
     await page.wait_for_timeout(1500)
 
 
+NEXT_IDS = ("bottom-navigation-next-button", "pageFooterNextButton")  # older Workday sites, newer ones
+
+
+async def _next_ready(page, timeout=60000):
+    """Workday greys out Continue/Submit while busy (parsing the resume, loading the Review summary)."""
+    enabled = ", ".join(f'[data-automation-id="{i}"]:enabled' for i in NEXT_IDS)
+    with contextlib.suppress(Exception):
+        await page.locator(enabled).first.wait_for(timeout=timeout)
+
+
 async def _next(page):
-    """Save and Continue / Continue / Submit. Older Workday sites use the first id, newer ones the second."""
-    for automation_id in ("bottom-navigation-next-button", "pageFooterNextButton"):
+    """Save and Continue / Continue / Submit."""
+    await _next_ready(page)
+    for automation_id in NEXT_IDS:
         if await _visible(page, automation_id, 500):
             return await _press(page, automation_id)
     raise RuntimeError("no Continue button on this page")
@@ -77,6 +88,8 @@ async def _fill_sign_in(page, email, password):
     await _id(page, "email").fill(email)
     await _id(page, "password").fill(password)
     await _press(page, "signInSubmitButton")
+    with contextlib.suppress(Exception):  # signing in can outlast the page going network-idle
+        await _id(page, "signInSubmitButton").wait_for(state="hidden", timeout=15000)
 
 
 async def _signed_in(page):
@@ -159,10 +172,7 @@ async def apply(job, ask, confirm, stuck):
                     await page.wait_for_timeout(3000)
                 step = await _step(page)
                 if re.search(r"review", step, re.I):
-                    with contextlib.suppress(Exception):  # Submit stays disabled until the summary has loaded
-                        await page.locator('[data-automation-id="pageFooterNextButton"]:enabled, '
-                                           '[data-automation-id="bottom-navigation-next-button"]:enabled'
-                                           ).first.wait_for(timeout=20000)
+                    await _next_ready(page)  # so the screenshot shows the summary, not a spinner
                     if not await confirm(await page.screenshot(full_page=True)):
                         return "cancelled"
                     await _next(page)  # labelled Submit on this page
@@ -172,12 +182,14 @@ async def apply(job, ask, confirm, stuck):
                     raise RuntimeError("clicked Submit but Workday didn't confirm the application")
                 if re.search(r"autofill with resume", step, re.I):
                     await _id(page, "file-upload-input-ref").set_input_files(resume)
-                    await page.wait_for_timeout(6000)  # Workday parses the resume to prefill later pages
+                    await page.wait_for_timeout(3000)  # parsing starts; _next waits for it to finish
                 else:
                     # The step name shows before the page's fields render.
                     with contextlib.suppress(Exception):
                         await page.locator('[data-automation-id^="applyFlow"] input').first.wait_for(timeout=15000)
-                    await fill_form(page, job, ask)
+                    # My Experience has its own Resume/CV upload, usually already holding the one from the first step.
+                    attached = await page.get_by_text("Successfully Uploaded").count()
+                    await fill_form(page, job, ask, None if attached else resume)
                 await _next(page)
                 if errors := await _errors(page):
                     raise RuntimeError(f"Workday rejected '{step}': {'; '.join(errors[:5])}")

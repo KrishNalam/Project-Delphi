@@ -26,7 +26,11 @@ SUCCESS = re.compile(r"thank(s| you) for (applying|your application|your interes
 # Tags every visible form control with data-delphi=<index> and describes it for the LLM.
 EXTRACT_JS = r"""
 () => {
-  const clean = s => (s || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  // Long questions keep their start and end: the end holds the actual ask and the required '*'.
+  const clean = s => {
+    s = (s || '').replace(/\s+/g, ' ').trim();
+    return s.length > 400 ? s.slice(0, 300) + ' … ' + s.slice(-90) : s;
+  };
   const byId = id => id && document.getElementById(id)?.innerText;
   // Question text: the closest wrapper with text besides the field's own options.
   const near = (el, count, skip) => {
@@ -158,6 +162,8 @@ async def fields_of(url):
 async def _fill(page, field, value):
     el = page.locator(f'[data-delphi="{field["index"]}"]')
     kind = field["type"]
+    with contextlib.suppress(Exception):  # mid-screen, so sticky headers/footers (Workday's Save bar) don't cover it
+        await el.evaluate("e => e.scrollIntoView({block: 'center'})", timeout=2000)
     if kind.startswith("select"):
         await el.select_option(label=value)
     elif kind == "combobox":
@@ -174,15 +180,19 @@ async def _fill(page, field, value):
             with contextlib.suppress(Exception):
                 await option.click(timeout=3000)
     elif kind == "listbox":
-        options, before = await _open_dropdown(page, el)
-        await options.first.wait_for(timeout=4000)
-        exact = options.filter(has_text=re.compile(f"^{re.escape(value.strip())}$", re.I))
-        # A short reply like "Bachelor" still finds "Bachelor's Degree".
-        await (exact if await exact.count() else options.filter(has_text=value.strip())).first.click()
-        # Wait for it to close, else the next dropdown's pick can land in this closing popup.
-        await _wait_count(page.get_by_role("listbox").filter(visible=True), lambda n: n <= before, page)
-    elif kind == "datepart":  # Workday's split MM / DD / YYYY boxes only take keystrokes
-        await el.click()
+        for _ in range(2):  # a pick sometimes doesn't take; check the button shows it, else try once more
+            options, before = await _open_dropdown(page, el)
+            await options.first.wait_for(timeout=4000)
+            exact = options.filter(has_text=re.compile(f"^{re.escape(value.strip())}$", re.I))
+            # A short reply like "Bachelor" still finds "Bachelor's Degree".
+            option = (exact if await exact.count() else options.filter(has_text=value.strip())).first
+            picked = (await option.inner_text()).strip()
+            await option.click()
+            # Wait for it to close, else the next dropdown's pick can land in this closing popup.
+            await _wait_count(page.get_by_role("listbox").filter(visible=True), lambda n: n <= before, page)
+            if (await el.inner_text()).strip() == picked:
+                break
+    elif kind == "datepart":  # Workday's split MM / DD / YYYY boxes only take keystrokes (a "YYYY" overlay eats clicks)
         await el.press_sequentially(value)
     elif kind == "yesno":
         await el.get_by_role("button", name=value.strip(), exact=True).click()
@@ -244,6 +254,8 @@ async def _fill_fields(page, job, ask, fields, todo, answers):
         asked = {f["index"] for f in rest}
         values |= {f.index: f.value for f in plan.fills if f.index in asked}
         unknown = [i for i in plan.unknown if i in asked and i not in values]
+        # A required field Claude neither answered nor flagged still has to be answered: ask.
+        unknown += [i for i in asked if fields[i]["required"] and i not in values and i not in unknown]
     if unknown:
         for i, reply in zip(unknown, await ask([_question(fields[i]) for i in unknown]), strict=True):
             values[i] = answers[fields[i]["label"]] = reply
@@ -264,7 +276,10 @@ async def fill_form(page, job, ask, resume=None):
     fields = await read_fields(page)
     first, seen = fields, set()
     for _ in range(3):  # an answer can reveal a follow-up question (e.g. a referrer's name), so look again
-        todo = [f for f in fields if (f["label"], f["type"]) not in seen and not f["filled"]]
+        # Optional on/off boxes ("I currently work here", "I have a preferred name") stay as the site set them:
+        # their labels repeat without context, so a guess can tick every job as current.
+        todo = [f for f in fields if (f["label"], f["type"]) not in seen and not f["filled"]
+                and not (f["type"] == "checkbox" and len(f["options"]) == 1 and not f["required"])]
         if not todo:
             break
         seen |= {(f["label"], f["type"]) for f in todo}
