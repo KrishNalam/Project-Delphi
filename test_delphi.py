@@ -60,6 +60,7 @@ def test_parse_answers():
     assert parse_answers("1. Yes\n2) 2028-04", 2) == ["Yes", "2028-04"]
     assert parse_answers("just one", 1) == ["just one"]
     assert parse_answers("1. only one", 2) is None
+    assert parse_answers("April 2028", 2) == ["April 2028", "April 2028"]
 
 
 if __name__ == "__main__":

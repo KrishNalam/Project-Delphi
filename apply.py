@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import sys
+from pathlib import Path
 
 from playwright.async_api import async_playwright
 
@@ -125,42 +126,52 @@ def _question(field):
     return field["label"] + options
 
 
-async def apply(job, ask, confirm):
-    """Fill and submit. Returns 'submitted', 'unconfirmed', 'cancelled' or 'handoff' (you finish it).
+async def apply(job, ask, confirm, stuck):
+    """Fill and submit. Returns 'submitted', 'cancelled', 'unsupported', 'manual' (you finished it) or 'handoff'.
 
-    ask(questions) -> answers and confirm(png) -> bool are async callbacks into the Telegram bot.
+    Async callbacks into the Telegram bot: ask(questions) -> answers, confirm(png) -> bool, and
+    stuck(reason, png) -> bool when the bot can't finish (True = you finished it yourself).
     """
     if not SUPPORTED.search(job["url"]):
-        return "handoff"
+        return "unsupported"
+    resume = Path(PROFILE.get("resume_pdf") or "").expanduser()
+    if not resume.is_file():
+        raise RuntimeError(f"resume_pdf in profile.yaml doesn't exist: {resume}")
     answers = json.loads(ANSWERS.read_text()) if ANSWERS.exists() else {}
     async with async_playwright() as p:
         page, fields = await _open(p, job["url"])
-        if not fields:
-            return "handoff"
-        plan = await asyncio.to_thread(llm.map_fields, job, fields, answers)
-        values = {f.index: f.value for f in plan.fills
-                  if 0 <= f.index < len(fields) and fields[f.index]["type"] != "file"}
-        unknown = [i for i in plan.unknown if 0 <= i < len(fields) and i not in values]
-        if unknown:
-            for i, reply in zip(unknown, await ask([_question(fields[i]) for i in unknown]), strict=True):
-                values[i] = answers[fields[i]["label"]] = reply
-            ANSWERS.write_text(json.dumps(answers, indent=1))
-        for i, value in values.items():
-            try:
-                await _fill(page, fields[i], value)
-            except Exception as e:  # one stubborn widget shouldn't sink the form; the screenshot shows it
-                log.warning("fill %r: %s", fields[i]["label"], e)
-        # Resume goes in the required upload if there is one, else the one labelled resume/CV, else the first.
-        files = sorted((f for f in fields if f["type"] == "file"),
-                       key=lambda f: (not f["required"], not re.search(r"resume|cv", f["label"], re.I)))
-        if files:
-            await page.locator(f'[data-delphi="{files[0]["index"]}"]').set_input_files(PROFILE["resume_pdf"])
-        if not await confirm(await page.screenshot(full_page=True)):
-            return "cancelled"
-        await page.locator("button[type=submit], input[type=submit], button:has-text('Submit')").first.click()
-        await page.wait_for_timeout(6000)
-        # No thank-you page usually means a CAPTCHA popped up or a field was rejected.
-        return "submitted" if SUCCESS.search(await page.inner_text("body")) else "unconfirmed"
+        try:
+            if not fields:
+                raise RuntimeError("found no form fields on the page")
+            plan = await asyncio.to_thread(llm.map_fields, job, fields, answers)
+            values = {f.index: f.value for f in plan.fills
+                      if 0 <= f.index < len(fields) and fields[f.index]["type"] != "file"}
+            unknown = [i for i in plan.unknown if 0 <= i < len(fields) and i not in values]
+            if unknown:
+                for i, reply in zip(unknown, await ask([_question(fields[i]) for i in unknown]), strict=True):
+                    values[i] = answers[fields[i]["label"]] = reply
+                ANSWERS.write_text(json.dumps(answers, indent=1))
+            for i, value in values.items():
+                try:
+                    await _fill(page, fields[i], value)
+                except Exception as e:  # one stubborn widget shouldn't sink the form; the screenshot shows it
+                    log.warning("fill %r: %s", fields[i]["label"], e)
+            # Resume goes in the required upload if there is one, else the one labelled resume/CV, else the first.
+            files = sorted((f for f in fields if f["type"] == "file"),
+                           key=lambda f: (not f["required"], not re.search(r"resume|cv", f["label"], re.I)))
+            if files:
+                await page.locator(f'[data-delphi="{files[0]["index"]}"]').set_input_files(resume)
+            if not await confirm(await page.screenshot(full_page=True)):
+                return "cancelled"
+            await page.locator("button[type=submit], input[type=submit], button:has-text('Submit')").first.click()
+            await page.wait_for_timeout(6000)
+            if SUCCESS.search(await page.inner_text("body")):
+                return "submitted"
+            reason = "I clicked submit but couldn't confirm it went through (often a CAPTCHA or a rejected field)"
+        except Exception as e:
+            log.exception("applying to %s", job["url"])
+            reason = f"Something broke while filling the form: {str(e)[:300]}"
+        return "manual" if await stuck(reason, await page.screenshot(full_page=True)) else "handoff"
 
 
 if __name__ == "__main__":

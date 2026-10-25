@@ -74,8 +74,11 @@ async def tick(ctx):
 
 
 def parse_answers(text, n):
-    """'1. foo\\n2) bar' -> ['foo', 'bar']. None unless there are exactly n answers."""
-    lines = [re.sub(r"^\s*\d+[.)]\s*", "", line).strip() for line in text.splitlines() if line.strip()]
+    """'1. foo\\n2) bar' -> ['foo', 'bar']; a single unnumbered line answers all n. None if the count is off."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if n > 1 and len(lines) == 1 and not re.match(r"\d+[.)]", lines[0]):
+        return lines * n
+    lines = [re.sub(r"^\d+[.)]\s*", "", line) for line in lines]
     return lines if len(lines) == n else None
 
 
@@ -90,13 +93,17 @@ async def _wait(kind):
 
 async def run_apply(job, bot):
     async with apply_lock:
+        if row := already_applied(job):  # e.g. Apply tapped twice while the first run was going
+            await bot.send_message(CHAT_ID, f"You already applied to {job['company']} on {row['date']}.")
+            return
         await bot.send_message(CHAT_ID, f"Applying to {job['title']} @ {job['company']}…")
 
         async def ask(questions):
             numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
-            await bot.send_message(CHAT_ID, f"I need a few answers (one numbered line each):\n{numbered}")
+            await bot.send_message(CHAT_ID, f"I need a few answers. Reply with one numbered line each, "
+                                            f"or a single line to answer them all:\n{numbered}")
             while not (answers := parse_answers(await _wait("text"), len(questions))):
-                await bot.send_message(CHAT_ID, f"I need exactly {len(questions)} numbered answers, try again.")
+                await bot.send_message(CHAT_ID, f"I need {len(questions)} numbered lines, or one line for all.")
             await bot.send_message(CHAT_ID, "Got it, saved for next time.")
             return answers
 
@@ -109,24 +116,42 @@ async def run_apply(job, bot):
                                         Button("Cancel", callback_data="confirm:no")]]))
             return await _wait("confirm")
 
+        done_button = Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}")]])
+
+        async def stuck(reason, png):
+            if env("HEADLESS", "1") == "1":
+                caption = f"{reason}.\n\nThis is what I filled. Finish it here: {job['url']}"
+                await bot.send_document(CHAT_ID, png, filename="form.png", caption=caption[:1024],
+                                        reply_markup=done_button)
+                return False
+            # Watching mode: the browser stays open on your computer until you tap a button.
+            await bot.send_document(
+                CHAT_ID, png, filename="form.png",
+                caption=f"{reason}.\n\nThe browser is still open on your computer, finish it there."[:1024],
+                reply_markup=Keyboard([[Button("I applied ✅", callback_data="stuck:yes"),
+                                        Button("Close browser", callback_data="stuck:no")]]))
+            return await _wait("stuck")
+
+        error = ""
         try:
-            status = await apply.apply(job, ask, confirm)
-        except Exception:
+            status = await apply.apply(job, ask, confirm, stuck)
+        except Exception as e:  # before the form opened: missing resume, page didn't load, ...
             log.exception("applying to %s", job["url"])
-            status = "failed"
+            status, error = "failed", str(e)[:300]
         set_status(job["id"], status)
         if status == "submitted":
             log_application(job, "submitted")
             await bot.send_message(CHAT_ID, f"Submitted ✅ {job['title']} @ {job['company']}")
+        elif status == "manual":
+            log_application(job, "manual")
+            await bot.send_message(CHAT_ID, "Logged in applied.csv.")
         elif status == "cancelled":
-            await bot.send_message(CHAT_ID, "Cancelled, nothing was submitted.")
-        else:
-            reason = {"handoff": "I can't fill this site automatically",
-                      "unconfirmed": "I clicked submit but couldn't confirm it went through (often a CAPTCHA)",
-                      "failed": "Something broke while filling the form"}[status]
-            await bot.send_message(
-                CHAT_ID, f"{reason}. Finish it here:\n{job['url']}",
-                reply_markup=Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}")]]))
+            await bot.send_message(CHAT_ID, "Cancelled, nothing was submitted. Tap Apply again to retry.")
+        elif status in ("unsupported", "failed"):
+            reason = "I can't fill this site automatically" if status == "unsupported" else f"Couldn't start: {error}"
+            await bot.send_message(CHAT_ID, f"{reason}.\nFinish it here: {job['url']}\n"
+                                            "Or fix the problem and tap Apply again.", reply_markup=done_button)
+        # "handoff": stuck() already sent the screenshot and link.
 
 
 async def cmd_start(update, ctx):
@@ -174,18 +199,19 @@ async def on_button(update, ctx):
     if q.message.chat.id != CHAT_ID:
         return
     action, _, arg = q.data.partition(":")
-    if action == "confirm":
-        if pending and pending[0] == "confirm":
+    if action in ("confirm", "stuck"):
+        if pending and pending[0] == action:
             pending[1].set_result(arg == "yes")
         await q.edit_message_reply_markup(None)
         return
     job = get_job(arg)
     if not job:
         return
-    await q.edit_message_reply_markup(None)
     if action == "skip":
+        await q.edit_message_reply_markup(None)
         set_status(arg, "skipped")
     elif action == "done":
+        await q.edit_message_reply_markup(None)
         log_application(job, "manual")
         set_status(arg, "manual")
         await q.message.reply_text("Logged in applied.csv.")

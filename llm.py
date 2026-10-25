@@ -46,6 +46,8 @@ def rank(jobs, n):
                         for i, j in enumerate(jobs))
     picks = _ask(
         f"Candidate resume:\n{PROFILE.get('resume_text', '')}\n\n"
+        f"Work authorization: {PROFILE.get('work_auth', 'unknown')}. Rank down roles the candidate "
+        "likely can't take because of it.\n\n"
         f"Below are internship postings. Pick the {n} this candidate is most qualified for and most likely to get "
         f"an interview at. Score each 0-10 and give a one-line reason (max 15 words). Best first.\n\n{listing}",
         Ranking).picks
@@ -91,6 +93,8 @@ def map_fields(job, fields, answers):
         f"Form fields: {json.dumps(fields)}\n\n"
         "Rules:\n"
         "- Only use facts from the profile, resume or earlier answers. Never invent facts.\n"
+        "- Questions that restate a profile fact (graduation date, school, degree, work authorization) are "
+        "answerable: reformat the fact to fit the field (e.g. April 2028 -> 04/2028 or 2028-04-30).\n"
         "- For fields with options, value must be exactly one of the options "
         "(checkbox groups: comma-separate several).\n"
         "- Self-identification questions with no profile answer: pick the decline/prefer-not-to-say option.\n"
