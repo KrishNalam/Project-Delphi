@@ -54,6 +54,11 @@ CSV_FIELDS = ["date", "company", "title", "location", "url", "source", "status"]
 DONE = {"submitted", "manual"}
 
 
+def canonical(url):
+    """One posting, many links: drop the query string and a trailing /apply or /application."""
+    return re.sub(r"/(apply|application)$", "", url.split("?")[0].rstrip("/"))
+
+
 def _key(company, title):
     return re.sub(r"[^a-z0-9]", "", f"{company}{title}".lower())
 
@@ -67,9 +72,9 @@ def applied_rows(path=APPLIED_CSV):
 
 def already_applied(job, path=APPLIED_CSV):
     """The applied.csv row for this job (same URL, or same company + title), else None."""
-    key = _key(job["company"], job["title"])
+    key, url = _key(job["company"], job["title"]), canonical(job["url"])
     for row in applied_rows(path):
-        if row["status"] in DONE and (row["url"] == job["url"] or _key(row["company"], row["title"]) == key):
+        if row["status"] in DONE and (canonical(row["url"]) == url or _key(row["company"], row["title"]) == key):
             return row
     return None
 

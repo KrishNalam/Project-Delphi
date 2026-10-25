@@ -5,7 +5,7 @@ from pathlib import Path
 from bot import parse_answers
 from filters import NO_SPONSOR, keep
 from sources import _job, country_of
-from store import already_applied, log_application
+from store import already_applied, canonical, log_application
 
 
 def job(title="Software Engineering Intern", locations=("Austin, TX",), **kw):
@@ -45,6 +45,13 @@ def test_no_sponsor_phrases():
     assert not NO_SPONSOR.search("We offer visa sponsorship to interns.")
 
 
+def test_canonical():
+    base = "https://jobs.ashbyhq.com/1password/b2726ac7"
+    for url in [base, base + "/", base + "/application", base + "/application?embed=true", base + "?src=x"]:
+        assert canonical(url) == base, url
+    assert canonical("https://jobs.lever.co/x/123/apply") == "https://jobs.lever.co/x/123"
+
+
 def test_already_applied():
     path = Path(tempfile.mkdtemp()) / "applied.csv"
     first = _job("test", "Acme Corp", "SWE Intern", ["Toronto, ON"], "https://acme.com/jobs/1")
@@ -53,6 +60,7 @@ def test_already_applied():
     assert already_applied(first, path)["company"] == "Acme Corp"
     # Same role reposted under another URL still counts; a different role doesn't.
     assert already_applied(_job("test", "ACME corp", "SWE Intern ", [], "https://other.com/2"), path)
+    assert already_applied(_job("test", "Acme", "Renamed", [], "https://acme.com/jobs/1/apply?ref=li"), path)
     assert already_applied(_job("test", "Acme Corp", "Data Intern", [], "https://acme.com/jobs/3"), path) is None
 
 

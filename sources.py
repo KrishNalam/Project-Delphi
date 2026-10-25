@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 
 from config import PROFILE, env
+from store import canonical
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ def country_of(location):
 
 def _job(source, company, title, locations, url, posted=None, sponsorship="Other", description="", countries=None):
     return {
-        "id": hashlib.sha1(url.encode()).hexdigest()[:16],
+        "id": hashlib.sha1(canonical(url).encode()).hexdigest()[:16],
         "source": source, "company": company, "title": title, "locations": locations or ["Unknown"],
         "url": url, "posted": posted or time.time(), "sponsorship": sponsorship, "description": description,
         "countries": countries or list({country_of(loc) for loc in locations}) or [None],
