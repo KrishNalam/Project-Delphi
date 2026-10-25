@@ -26,8 +26,10 @@ def set_setting(key, value):
     DB.commit()
 
 
-def is_seen(job_id):
-    return DB.execute("select 1 from jobs where id = ?", (job_id,)).fetchone() is not None
+def is_new(job_id):
+    """Not shown to you yet (unknown jobs count as new)."""
+    row = DB.execute("select status from jobs where id = ?", (job_id,)).fetchone()
+    return row is None or row[0] == "new"
 
 
 def save_job(job):

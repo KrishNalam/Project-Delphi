@@ -14,7 +14,7 @@ import llm
 import sources
 from config import PROFILE, env
 from filters import keep
-from store import (already_applied, applied_rows, get_job, get_setting, is_seen, log_application, save_job,
+from store import (already_applied, applied_rows, get_job, get_setting, is_new, log_application, save_job,
                    set_setting, set_status)
 
 log = logging.getLogger("delphi")
@@ -30,14 +30,18 @@ def find_jobs():
     found = sources.github_repos() + sources.jobspy_jobs(countries) + sources.canvas_jobs()
     fresh = {}
     for job in found:
-        if is_seen(job["id"]):
+        # Only jobs already shown are skipped, so unpicked or filtered-out ones get another look later.
+        if not is_new(job["id"]):
             continue
         save_job(job)
         if keep(job, countries, PROFILE.get("needs_us_sponsorship", True)) and not already_applied(job):
             fresh[job["id"]] = job
     # ponytail: only the newest 150 go to the ranker to bound cost; raise it if good jobs get cut
     newest = sorted(fresh.values(), key=lambda j: j["posted"], reverse=True)[:150]
-    return llm.rank(newest, get_setting("count"))
+    picks = llm.rank(newest, get_setting("count"))
+    for job in picks:
+        set_status(job["id"], "shown")
+    return picks
 
 
 async def send_digest(app):
