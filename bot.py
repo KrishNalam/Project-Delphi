@@ -41,7 +41,12 @@ def find_jobs():
 
 
 async def send_digest(app):
-    jobs = await asyncio.to_thread(find_jobs)
+    try:
+        jobs = await asyncio.to_thread(find_jobs)
+    except Exception as e:
+        log.exception("digest failed")
+        await app.bot.send_message(CHAT_ID, f"Digest failed: {e}\nFix it, then send /digest to retry.")
+        return
     if not jobs:
         await app.bot.send_message(CHAT_ID, "No new matches today.")
     for job in jobs:
