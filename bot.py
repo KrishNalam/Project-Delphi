@@ -14,8 +14,8 @@ import llm
 import sources
 from config import PROFILE, env
 from filters import keep
-from store import already_applied, get_job, get_setting, is_seen, log_application, save_job, set_status
-from store import set_setting
+from store import (already_applied, applied_rows, get_job, get_setting, is_seen, log_application, save_job,
+                   set_setting, set_status)
 
 log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
@@ -129,6 +129,36 @@ async def cmd_digest(update, ctx):
     ctx.application.create_task(send_digest(ctx.application))
 
 
+async def cmd_country(update, ctx):
+    countries = {"canada": ["canada"], "usa": ["usa"], "both": ["canada", "usa"]}.get((ctx.args or [""])[0].lower())
+    if countries:
+        set_setting("countries", countries)
+    await update.message.reply_text(f"Searching: {', '.join(get_setting('countries'))}. "
+                                    "Change with /country canada|usa|both")
+
+
+async def cmd_count(update, ctx):
+    if ctx.args and ctx.args[0].isdigit():
+        set_setting("count", max(5, min(10, int(ctx.args[0]))))
+    await update.message.reply_text(f"{get_setting('count')} jobs per digest. Change with /count 5-10")
+
+
+async def cmd_pause(update, ctx):
+    set_setting("paused", True)
+    await update.message.reply_text("Paused. /resume to start again.")
+
+
+async def cmd_resume(update, ctx):
+    set_setting("paused", False)
+    await update.message.reply_text("Resumed.")
+
+
+async def cmd_applied(update, ctx):
+    rows = applied_rows()
+    lines = [f"{r['date']}  {r['company']} · {r['title']} ({r['status']})" for r in rows[-15:]]
+    await update.message.reply_text(f"{len(rows)} applications. Latest:\n" + "\n".join(lines) if rows else "None yet.")
+
+
 async def on_button(update, ctx):
     q = update.callback_query
     await q.answer()
@@ -168,6 +198,9 @@ def main():
     me = filters.Chat(CHAT_ID)  # only you can drive the bot
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest, me))
+    for name, fn in [("country", cmd_country), ("count", cmd_count), ("pause", cmd_pause),
+                     ("resume", cmd_resume), ("applied", cmd_applied)]:
+        app.add_handler(CommandHandler(name, fn, me))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))
     app.job_queue.run_repeating(tick, interval=3600, first=10)
