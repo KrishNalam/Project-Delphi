@@ -121,8 +121,11 @@ class Postings(BaseModel):
 def extract_jobs(text):
     """Job/internship postings mentioned in free text (Quercus pages and announcements)."""
     return _ask("extract",
-                "Extract every job or internship posting from these course pages. Use the application link as url "
-                "(empty string if there is none). Return an empty list if there are no postings.\n\n" + text,
+                "Extract every job, internship or co-op posting from these course posts. Links appear as "
+                "'Title (url)'; use the posting's own link as url (empty string if none). Put the term type in the "
+                "title when the post groups jobs that way, e.g. 'Software Engineer I (Co-op, Winter 2027)'. "
+                "location: city and country if stated, else empty. Skip events, info sessions and workshops. "
+                "Return an empty list if there are no postings.\n\n" + text,
                 Postings, model=FAST_MODEL, effort="low").postings
 
 

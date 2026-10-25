@@ -95,31 +95,51 @@ def jobspy_jobs(countries):
 
 
 def _text(html):
-    return unescape(re.sub(r"<[^>]+>", " ", html or ""))
+    """Plain text that keeps links, so Claude can see where to apply: <a href="u">Title</a> -> Title (u)."""
+    html = re.sub(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r"\2 (\1)", html or "", flags=re.S | re.I)
+    html = re.sub(r"<(br|/p|/li|/tr|/h\d)[^>]*>", "\n", html, flags=re.I)
+    return re.sub(r"[ \t]+", " ", unescape(re.sub(r"<[^>]+>", " ", html))).strip()
 
 
-def canvas_jobs():
-    """Job posts from Quercus (Canvas) announcements and pages changed in the last 2 days."""
-    base, token, courses = env("CANVAS_URL"), env("CANVAS_TOKEN"), env("CANVAS_COURSE_IDS", "")
-    if not (base and token and courses):
+def _time(stamp):
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def canvas_jobs(days=2):
+    """Job posts from Quercus (Canvas) from the last `days`: course announcements and pages, plus
+    replies in discussion threads like the CS Career and Research Opportunities board."""
+    base, token = env("CANVAS_URL"), env("CANVAS_TOKEN")
+    courses = [c.strip() for c in env("CANVAS_COURSE_IDS", "").split(",") if c.strip()]
+    threads = [t.strip() for t in env("CANVAS_DISCUSSIONS", "").split(",") if t.strip()]  # "course/topic"
+    if not (base and token and (courses or threads)):
         return []
     import llm
 
     api, headers = f"{base.rstrip('/')}/api/v1", {"Authorization": f"Bearer {token}"}
-    since = datetime.now(timezone.utc) - timedelta(days=2)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     texts = []
-    for course in (c.strip() for c in courses.split(",")):
+    for course in courses:
         try:
             for a in _get_json(f"{api}/announcements?context_codes[]=course_{course}&start_date={since.date()}",
                                headers):
                 texts.append(f"{a['title']}\n{_text(a['message'])}")
             for p in _get_json(f"{api}/courses/{course}/pages?sort=updated_at&order=desc&per_page=20", headers):
-                if datetime.fromisoformat(p["updated_at"].replace("Z", "+00:00")) >= since:
+                if _time(p["updated_at"]) >= since:
                     page = _get_json(f"{api}/courses/{course}/pages/{p['url']}", headers)
                     texts.append(f"{page['title']}\n{_text(page.get('body'))}")
         except Exception as e:
             log.warning("canvas course %s: %s", course, e)
+    for thread in threads:
+        course, _, topic = thread.partition("/")
+        try:
+            # ponytail: newest 50 replies only; plenty for a daily scan, raise per_page for long lookbacks
+            for entry in _get_json(f"{api}/courses/{course}/discussion_topics/{topic}/entries?per_page=50", headers):
+                if _time(entry["created_at"]) >= since:
+                    texts.append(_text(entry.get("message")))
+        except Exception as e:
+            log.warning("canvas discussion %s: %s", thread, e)
     if not texts:
         return []
     postings = llm.extract_jobs("\n\n---\n\n".join(texts))
-    return [_job("quercus", p.company, p.title, [p.location], p.url) for p in postings if p.url]
+    return [_job("quercus", p.company, p.title, [p.location] if p.location else [], p.url)
+            for p in postings if p.url]
