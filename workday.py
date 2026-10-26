@@ -168,10 +168,14 @@ async def _add_experience(page):
     no jobs and few skills. Type them in from profile.yaml when that happens."""
     section = page.locator('[role=group][aria-labelledby="Work-Experience-section"]')
     titles = section.locator('input[id$="--jobTitle"]')
-    if await titles.count() == 0:
+    add = section.locator('[data-automation-id="add-button"]').last
+    # Saved jobs render a moment after the page; the button reads "Add Another" once there's any.
+    with contextlib.suppress(Exception):
+        await add.wait_for(timeout=15000)
+    if await add.count() and (await add.inner_text()).strip() == "Add":
         for job in PROFILE.get("experience", []):
             before = await titles.count()
-            await section.locator('[data-automation-id="add-button"]').last.click()
+            await add.click()
             await _wait_count(titles, lambda n, before=before: n > before, page)
             prefix = (await titles.last.get_attribute("id")).removesuffix("--jobTitle")
             await page.locator(f"#{prefix}--jobTitle").fill(job["title"])
