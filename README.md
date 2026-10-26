@@ -90,6 +90,6 @@ forms. Edit it freely.
 ## Dev
 
 ```
-python test_delphi.py          # self-check for filters, country parsing, applied.csv
-python apply.py <posting url>  # print the form fields the bot sees
+.venv/bin/python test_delphi.py          # self-check for filters, country parsing, applied.csv
+.venv/bin/python apply.py <posting url>  # print the form fields the bot sees
 ```

@@ -4,8 +4,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=%h/Projects/Project-Delphi
-ExecStart=%h/Projects/Project-Delphi/.venv/bin/python bot.py
+WorkingDirectory=%h/Projects/Delphi
+ExecStart=%h/Projects/Delphi/.venv/bin/python bot.py
 Restart=on-failure
 RestartSec=60
 
