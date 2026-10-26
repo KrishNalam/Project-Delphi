@@ -36,7 +36,7 @@ cp .env.example .env && cp profile.example.yaml profile.yaml   # fill both in
 
 ```
 mkdir -p ~/.config/systemd/user
-sed "s|%h/Projects/Project-Delphi|$PWD|" delphi.service > ~/.config/systemd/user/delphi.service   # run from the repo
+sed "s|%h/Projects/Delphi|$PWD|" delphi.service > ~/.config/systemd/user/delphi.service   # run from the repo
 systemctl --user enable --now delphi
 loginctl enable-linger $USER      # keeps running after you log out
 journalctl --user -u delphi -f    # logs

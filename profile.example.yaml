@@ -11,28 +11,28 @@ website:
 school: University of Toronto
 degree:
 major:
-grad_date:        # e.g. 2028-04
+grad_date: # e.g. 2028-04
 gpa:
 
 work_auth:
-  canada: Authorized to work, no sponsorship needed
-  usa: Requires visa sponsorship
-needs_us_sponsorship: true   # drops US postings that say they won't sponsor
+    canada: Authorized to work, no sponsorship needed
+    usa: Requires visa sponsorship
+needs_us_sponsorship: true # drops US postings that say they won't sponsor
 
-search_terms:     # LinkedIn / Indeed searches
-  - software engineering intern
-  - software developer co-op
-  - machine learning intern
-  - data science intern
+search_terms: # LinkedIn / Indeed searches
+    - software engineering intern
+    - software developer co-op
+    - machine learning intern
+    - data science intern
 
 resume_pdf: /home/krish/resume.pdf
 
 # Voluntary self-identification. Blank = "decline to answer".
 eeo:
-  gender:
-  race:
-  veteran:
-  disability:
+    gender:
+    race:
+    veteran:
+    disability:
 
 resume_text: |
-  Paste your resume as plain text. Used for ranking jobs and answering short questions.
+    Paste your resume as plain text. Used for ranking jobs and answering short questions.
