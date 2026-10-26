@@ -4,6 +4,7 @@ import logging
 import re
 from datetime import datetime
 from html import escape
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard
@@ -208,6 +209,31 @@ async def cmd_applied(update, ctx):
     await update.message.reply_text(f"{len(rows)} applications. Latest:\n" + "\n".join(lines) if rows else "None yet.")
 
 
+def job_from_url(url):
+    """A job for /apply: the saved one if the digest found it, else a stub named after the link."""
+    stub = sources._job("telegram", "", "", [], url)
+    if job := get_job(stub["id"]):
+        return job
+    # e.g. altera.wd1.myworkdayjobs.com/.../Software-Intern_R03373 -> Altera, "Software Intern"
+    host, slug = urlparse(url).netloc, urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+    # jobs.lever.co/acme/..., boards.greenhouse.io/acme/...: the company is the first path segment
+    name = host.removeprefix("www.").split(".")[0]
+    if name in ("jobs", "boards", "job-boards", "apply", "careers"):
+        name = urlparse(url).path.strip("/").split("/")[0] or name
+    stub["company"] = name.title()
+    stub["title"] = re.sub(r"_R?\d+$", "", slug).replace("-", " ").strip() or url
+    save_job(stub)
+    return stub
+
+
+async def cmd_apply(update, ctx):
+    url = (ctx.args or [""])[0]
+    if not url.startswith("http"):
+        await update.message.reply_text("Send /apply <link to the posting>")
+        return
+    ctx.application.create_task(run_apply(job_from_url(url), ctx.bot))
+
+
 async def on_button(update, ctx):
     q = update.callback_query
     await q.answer()
@@ -249,7 +275,8 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest, me))
     for name, fn in [("country", cmd_country), ("count", cmd_count), ("pause", cmd_pause),
-                     ("resume", cmd_resume), ("applied", cmd_applied), ("cost", cmd_cost)]:
+                     ("resume", cmd_resume), ("applied", cmd_applied), ("cost", cmd_cost),
+                     ("apply", cmd_apply)]:
         app.add_handler(CommandHandler(name, fn, me))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))

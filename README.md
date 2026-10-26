@@ -53,6 +53,7 @@ digest goes out within an hour of waking up.
 | `/country canada\|usa\|both` | where to look |
 | `/count 5-10` | jobs per digest |
 | `/pause`, `/resume` | stop / restart the daily digest |
+| `/apply <link>` | apply to any posting, e.g. one you found yourself or want to redo |
 | `/applied` | latest rows of `applied.csv` |
 | `/cost` | Claude spend: last 30 days, average per digest and per application |
 
