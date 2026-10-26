@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
 
-from apply import SUCCESS, fill_form, open_page, resume_path
+from apply import SUCCESS, _wait_count, fill_form, open_page, resume_path
 from config import PROFILE, env
 from store import get_setting, set_setting
 
@@ -156,6 +156,53 @@ async def _sign_in(page, ask, url):
     raise RuntimeError(f"couldn't sign in to {tenant}: {'; '.join(errors)}")
 
 
+async def _type_date(page, prefix, value):
+    """'2026-09' into Workday's MM / YYYY boxes (keystrokes only: a 'YYYY' overlay eats clicks)."""
+    year, month = str(value).split("-")[:2]
+    await page.locator(f"#{prefix}-dateSectionMonth-input").press_sequentially(month)
+    await page.locator(f"#{prefix}-dateSectionYear-input").press_sequentially(year)
+
+
+async def _add_experience(page):
+    """Workday reads the resume only the first time you open an application, so a reopened draft can have
+    no jobs and few skills. Type them in from profile.yaml when that happens."""
+    section = page.locator('[role=group][aria-labelledby="Work-Experience-section"]')
+    titles = section.locator('input[id$="--jobTitle"]')
+    if await titles.count() == 0:
+        for job in PROFILE.get("experience", []):
+            before = await titles.count()
+            await section.locator('[data-automation-id="add-button"]').last.click()
+            await _wait_count(titles, lambda n, before=before: n > before, page)
+            prefix = (await titles.last.get_attribute("id")).removesuffix("--jobTitle")
+            await page.locator(f"#{prefix}--jobTitle").fill(job["title"])
+            await page.locator(f"#{prefix}--companyName").fill(job["company"])
+            await page.locator(f"#{prefix}--location").fill(job.get("location", ""))
+            await _type_date(page, f"{prefix}--startDate", job["start"])
+            if str(job.get("end", "present")).lower() == "present":
+                await page.locator(f"#{prefix}--currentlyWorkHere").evaluate("e => e.checked || e.click()")
+            else:
+                await _type_date(page, f"{prefix}--endDate", job["end"])
+            await page.locator(f"#{prefix}--roleDescription").fill(job.get("description", "").strip())
+    skills = page.locator('[data-automation-id="formField-skills"]')
+    if not await skills.count():
+        return
+    have = {s.lower() for s in await skills.locator('[data-automation-id="selectedItem"]').all_inner_texts()}
+    box = skills.locator("input")
+    for skill in PROFILE.get("skills", []):
+        if skill.lower() in have:
+            continue
+        await box.fill(skill)
+        await box.press("Enter")  # runs the search
+        # Only an exact match: "C" shouldn't become "C#". Skills Workday doesn't list are skipped.
+        option = page.locator('[data-automation-id="promptOption"]').filter(
+            has_text=re.compile(f"^{re.escape(skill)}$", re.I)).filter(visible=True).first
+        try:
+            await option.click(timeout=4000)
+        except Exception:
+            await box.fill("")
+            await box.press("Escape")
+
+
 async def apply(job, ask, confirm, stuck):
     """Same contract as apply.apply."""
     resume = resume_path()
@@ -189,6 +236,8 @@ async def apply(job, ask, confirm, stuck):
                         await page.locator('[data-automation-id^="applyFlow"] input').first.wait_for(timeout=15000)
                     # My Experience has its own Resume/CV upload, usually already holding the one from the first step.
                     attached = await page.get_by_text("Successfully Uploaded").count()
+                    if re.search(r"experience", step, re.I):
+                        await _add_experience(page)
                     await fill_form(page, job, ask, None if attached else resume)
                 await _next(page)
                 if errors := await _errors(page):

@@ -141,7 +141,7 @@ class FormPlan(BaseModel):
 
 def map_fields(job, fields, answers):
     """What to put in each form field. Required fields we can't answer truthfully come back in `unknown`."""
-    profile = {k: v for k, v in PROFILE.items() if k not in ("resume_text", "search_terms")}
+    profile = {k: v for k, v in PROFILE.items() if k not in ("resume_text", "search_terms", "experience", "skills")}
     # Same for every application, so it's cached; job, answers and fields change and go after it.
     stable = (
         "You are filling out internship applications for this applicant.\n\n"

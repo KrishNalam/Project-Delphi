@@ -25,6 +25,17 @@ search_terms: # LinkedIn / Indeed searches
     - machine learning intern
     - data science intern
 
+# Typed into Workday's My Experience when its resume reader leaves it empty. Newest first.
+experience:
+    - title: Software Engineer Intern
+      company: Acme
+      location: Toronto, ON
+      start: 2026-05 # YYYY-MM
+      end: present # or YYYY-MM
+      description: |
+          • What you built and the impact
+skills: [Python, Java, SQL]
+
 resume_pdf: /home/krish/resume.pdf
 
 # Voluntary self-identification. Blank = "decline to answer".
