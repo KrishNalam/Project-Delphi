@@ -73,7 +73,7 @@ def usage_summary(path=USAGE_CSV):
     month_ago = (datetime.now() - timedelta(days=30)).isoformat()
     lines = [f"Last 30 days: ${sum(float(r['cost']) for r in rows if r['time'] >= month_ago):.2f}  "
              f"(all time ${sum(float(r['cost']) for r in rows):.2f}, {len(rows)} calls)"]
-    for kind, name in [("rank", "Daily digest"), ("map_fields", "Per application"), ("extract", "Quercus scan")]:
+    for kind, name in [("rank", "Daily digest"), ("map_fields", "Per form page"), ("extract", "Quercus scan")]:
         costs = [float(r["cost"]) for r in rows if r["kind"] == kind]
         if costs:
             lines.append(f"{name}: avg ${sum(costs) / len(costs):.4f} over {len(costs)}")

@@ -102,7 +102,7 @@ def test_cost_tracking():
     llm._log("map_fields", "claude-opus-5-5", usage, path)
     llm._log("rank", "claude-haiku-5-5", usage, path)
     summary = llm.usage_summary(path)
-    assert "Per application: avg $0.0086 over 1" in summary and "Daily digest: avg $0.0002 over 1" in summary, summary
+    assert "Per form page: avg $0.0086 over 1" in summary and "Daily digest: avg $0.0002 over 1" in summary, summary
 
 
 def test_box_choice():
