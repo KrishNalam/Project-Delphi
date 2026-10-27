@@ -204,7 +204,7 @@ async def _add_experience(page):
             await option.click(timeout=4000)
         except Exception:
             await box.fill("")
-            await box.press("Escape")
+    await box.press("Tab")  # closes the search popup (Escape doesn't); left open it blocks Save and Continue
 
 
 async def apply(job, ask, confirm, stuck):
@@ -238,14 +238,23 @@ async def apply(job, ask, confirm, stuck):
                     # The step name shows before the page's fields render.
                     with contextlib.suppress(Exception):
                         await page.locator('[data-automation-id^="applyFlow"] input').first.wait_for(timeout=15000)
+                        await page.wait_for_load_state("networkidle", timeout=15000)  # saved values load after
                     # My Experience has its own Resume/CV upload, usually already holding the one from the first step.
                     attached = await page.get_by_text("Successfully Uploaded").count()
                     if re.search(r"experience", step, re.I):
                         await _add_experience(page)
                     await fill_form(page, job, ask, None if attached else resume)
                 await _next(page)
+                await _next_ready(page, 30000)  # Workday greys the button while it saves
+                if await _errors(page):  # usually a dropdown pick that didn't take: fill what's empty once more
+                    await fill_form(page, job, ask)
+                    await _next(page)
+                    await _next_ready(page, 30000)
                 if errors := await _errors(page):
                     raise RuntimeError(f"Workday rejected '{step}': {'; '.join(errors[:5])}")
+                if await _step(page) == step:  # a save that hung (seen on Trimble): press once more
+                    await _next(page)
+                    await _next_ready(page, 30000)
                 if await _step(page) == step:
                     raise RuntimeError(f"still on '{step}' after Save and Continue")
             raise RuntimeError(f"no Review page after {MAX_PAGES} pages")

@@ -63,6 +63,7 @@ EXTRACT_JS = r"""
       : (el.type || el.tagName).toLowerCase();
     if (['hidden', 'submit', 'button', 'search', 'image', 'reset'].includes(type)) continue;
     if (type !== 'file' && !el.offsetParent) continue;  // invisible (file inputs are usually styled away)
+    if (el.closest('[role=listbox]')) continue;  // a choice in an open dropdown or search popup, not a question
     const shim = el.getAttribute('aria-hidden') === 'true' || el.tabIndex < 0;  // e.g. react-select's required-input
     if (shim && !['file', 'radio', 'checkbox'].includes(type)) continue;
     let members = [el], options = [], boxed = false;
