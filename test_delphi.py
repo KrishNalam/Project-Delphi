@@ -78,6 +78,8 @@ def test_parse_answers():
     assert parse_answers("just one", 1) == ["just one"]
     assert parse_answers("1. only one", 2) is None
     assert parse_answers("April 2028", 2) == ["April 2028", "April 2028"]
+    assert parse_answers("4th year undergrad, 4 months, no", 3) == ["4th year undergrad", "4 months", "no"]
+    assert parse_answers("No, never", 3) == ["No, never"] * 3
 
 
 def test_known_values():

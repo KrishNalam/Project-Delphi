@@ -12,6 +12,7 @@ school: University of Toronto
 degree:
 major:
 grad_date: # e.g. 2028-04
+year_of_study: # e.g. 3rd year undergrad
 gpa:
 
 work_auth:

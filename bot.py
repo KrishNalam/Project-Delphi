@@ -91,10 +91,12 @@ async def tick(ctx):
 
 
 def parse_answers(text, n):
-    """'1. foo\\n2) bar' -> ['foo', 'bar']; a single unnumbered line answers all n. None if the count is off."""
+    """'1. foo\\n2) bar' -> ['foo', 'bar']. One unnumbered line: 'a, b, c' with exactly n parts is one answer each,
+    anything else answers all n. None if the count is off."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if n > 1 and len(lines) == 1 and not re.match(r"\d+[.)]", lines[0]):
-        return lines * n
+        parts = [p.strip() for p in lines[0].split(",")]
+        return parts if len(parts) == n else lines * n
     lines = [re.sub(r"^\d+[.)]\s*", "", line) for line in lines]
     return lines if len(lines) == n else None
 
@@ -129,7 +131,7 @@ async def run_apply(job, bot):
         async def ask(questions):
             numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
             await bot.send_message(CHAT_ID, f"I need a few answers. Reply with one numbered line each, "
-                                            f"or a single line to answer them all:\n{numbered}")
+                                            f"or one line like 'a, b, c', or one line to answer them all:\n{numbered}")
             while not (answers := parse_answers(await _wait("text"), len(questions))):
                 await bot.send_message(CHAT_ID, f"I need {len(questions)} numbered lines, or one line for all.")
             await bot.send_message(CHAT_ID, "Got it, saved for next time.")
