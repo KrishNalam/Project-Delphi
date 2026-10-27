@@ -157,11 +157,13 @@ def map_fields(job, fields, answers):
         "- Short free-text questions like 'why this company': 2-3 honest sentences grounded in the resume.\n"
         "- GPA: fill it only when the field is required; leave optional GPA fields out.\n"
         "- Skip file fields. Skip optional fields you can't answer.\n"
-        "- Put the index of every required field you can't answer from these facts in `unknown`."
+        "- Put the index of every required field you can't answer from these facts in `unknown`.\n\n"
+        # Saved answers change only when you answer something new, so they're cached too (they're most of the input).
+        f"Answers the applicant gave to earlier application questions: {json.dumps(answers)}"
     )
+    keep = ("index", "type", "label", "options", "required")
     return _ask(
         "map_fields",
         f"Job: {job['title']} at {job['company']}.\n\n"
-        f"Answers the applicant gave to earlier application questions: {json.dumps(answers)}\n\n"
-        f"Form fields: {json.dumps(fields)}",
+        f"Form fields: {json.dumps([{k: f[k] for k in keep} for f in fields])}",
         FormPlan, cached=stable)
