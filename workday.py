@@ -83,8 +83,12 @@ async def _errors(page):
 
 
 async def _fill_sign_in(page, email, password):
+    if await _visible(page, "SignInWithEmailButton"):
+        await _press(page, "SignInWithEmailButton")
     if not await _visible(page, "signInSubmitButton") and await _visible(page, "signInLink"):
         await _press(page, "signInLink")
+    if not await _visible(page, "email", 5000):  # e.g. a "verify your email" screen: _sign_in asks you about it
+        return
     await _id(page, "email").fill(email)
     await _id(page, "password").fill(password)
     await _press(page, "signInSubmitButton")
@@ -139,7 +143,9 @@ async def _sign_in(page, ask, url):
     for attempt in range(2):
         if await _signed_in(page):
             return
-        if not await _step(page):  # bounced to a standalone sign-in page: go back into the application
+        # Bounced to a standalone sign-in page, or stuck on a "verify your email" screen: go back in.
+        form = await _visible(page, "email") or await _visible(page, "SignInWithEmailButton")
+        if not await _step(page) or not form:
             await _open_application(page, url)
             if await _signed_in(page):
                 return
