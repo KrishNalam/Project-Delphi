@@ -67,7 +67,8 @@ EXTRACT_JS = r"""
     if (type !== 'file' && !el.offsetParent) continue;  // invisible (file inputs are usually styled away)
     if (el.closest('[role=listbox]')) continue;  // a choice in an open dropdown or search popup, not a question
     const shim = el.getAttribute('aria-hidden') === 'true' || el.tabIndex < 0;  // e.g. react-select's required-input
-    if (shim && !['file', 'radio', 'checkbox'].includes(type)) continue;
+    // Workday's Day and Year boxes are tabindex -1 too, but real.
+    if (shim && !['file', 'radio', 'checkbox', 'datepart'].includes(type)) continue;
     let members = [el], options = [], boxed = false;
     if (type === 'radio' || type === 'checkbox') {
       // One question = a shared name, or a <fieldset> holding only these boxes (Ashby names each box after itself).
@@ -93,7 +94,10 @@ EXTRACT_JS = r"""
       : chips ? !/^0 /.test(chips.innerText)
       : type === 'radio' || type === 'checkbox' ? members.some(m => m.checked)
       : type !== 'file' && !!el.value?.trim();
-    if (type === 'datepart') f.label += ` (${auto.replace('dateSection', '').replace('-input', '')})`;  // (Month)
+    if (type === 'datepart') {  // each box is labelled just "Month": take the question from the date's form field
+      const field = el.closest('[data-automation-id^=formField]')?.querySelector('legend, label');
+      f.label = clean(field?.innerText || f.label) + ` (${auto.replace('dateSection', '').replace('-input', '')})`;
+    }
     if (f.label.endsWith('*')) f.required = true;
     el.setAttribute('data-delphi', f.index);
     members.forEach(m => m.setAttribute('data-delphi-option', f.index));
@@ -168,6 +172,7 @@ async def read_fields(page):
             try:
                 options, _ = await _open_dropdown(page, page.locator(f'[data-delphi="{f["index"]}"]'))
                 await options.first.wait_for(timeout=3000)
+                await _wait_count(options, lambda n: n > 1, page)  # "Select One" shows before the real choices
                 f["options"] = [o.strip() for o in await options.all_inner_texts() if o.strip()]
             except Exception as e:
                 log.warning("options for %r: %s", f["label"], e)
@@ -201,9 +206,15 @@ async def _fill(page, field, value):
             with contextlib.suppress(Exception):
                 await option.click(timeout=3000)
     elif kind == "listbox":
-        for _ in range(2):  # a pick sometimes doesn't take; check the button shows it, else try once more
+        for attempt in range(2):  # a pick sometimes doesn't take; check the button shows it, else try once more
             options, before = await _open_dropdown(page, el)
-            await options.first.wait_for(timeout=4000)
+            try:
+                await options.first.wait_for(timeout=4000)
+            except Exception:  # the click didn't open it (focus was still in the previous widget)
+                await page.keyboard.press("Escape")
+                if attempt:
+                    raise
+                continue
             exact = options.filter(has_text=re.compile(f"^{re.escape(value.strip())}$", re.I))
             # A short reply like "Bachelor" still finds "Bachelor's Degree".
             option = (exact if await exact.count() else options.filter(has_text=value.strip())).first
