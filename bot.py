@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+import urllib.request
 from datetime import datetime
 from html import escape
 from urllib.parse import urlparse
@@ -102,8 +103,19 @@ async def _wait(kind):
         pending = None
 
 
+def final_url(url):
+    """Where a short link (go.vansh.nyc/eZ -> jobs.ashbyhq.com/...) lands, so the right filler picks it up."""
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=20) as r:
+            return r.url
+    except Exception:  # some sites refuse scripts; the link itself is the best we have
+        return url
+
+
 async def run_apply(job, bot):
     async with apply_lock:
+        job = {**job, "url": await asyncio.to_thread(final_url, job["url"])}
         if row := already_applied(job):  # e.g. Apply tapped twice while the first run was going
             await bot.send_message(CHAT_ID, f"You already applied to {job['company']} on {row['date']}.")
             return

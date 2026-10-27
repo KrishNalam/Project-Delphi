@@ -103,6 +103,20 @@ def test_cost_tracking():
     assert "Per application: avg $0.0086 over 1" in summary and "Daily digest: avg $0.0002 over 1" in summary, summary
 
 
+def test_box_choice():
+    from apply import _box_choice
+
+    def box(label, option, required=False):
+        return {"label": label, "options": [option], "required": required}
+    assert _box_choice(box("I understand that offers are conditional on a background check.", "I understand")) == "tick"
+    assert _box_choice(box("Do you agree to allow 1Password to contact you about job opportunities?", "Yes")) == "tick"
+    assert _box_choice(box("I have read and consent to these terms and conditions.*", "Yes", True)) == "tick"
+    assert _box_choice(box("Interested in careers at 1Password? Check this box to sign up.", "Yes")) == "leave"
+    assert _box_choice(box("I currently work here", "I currently work here")) == "leave"
+    assert _box_choice(box("Send me job alerts and promotions", "Yes")) == "leave"
+    assert _box_choice(box("Are you open to relocation?", "Yes")) is None
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

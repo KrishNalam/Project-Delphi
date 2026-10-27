@@ -20,6 +20,12 @@ from config import PROFILE, ROOT, env
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
 SUPPORTED = re.compile(r"greenhouse\.io|lever\.co|ashbyhq\.com")
+# Single tick boxes: agreements get ticked, promotions stay off, the site's own on/off settings are left alone.
+CONSENT = re.compile(r"understand|agree|acknowledge|consent|accept|certify|confirm|attest|terms|privacy|allow|"
+                     r"permission|authori[sz]", re.I)
+PROMOTIONAL = re.compile(r"promot|marketing|newsletter|subscribe|sign (me )?up|mailing list|job (alerts?|postings?)|"
+                         r"talent (community|network)", re.I)
+SETTING = re.compile(r"currently work here|preferred name", re.I)
 SUCCESS = re.compile(r"thank(s| you) for (applying|your application|your interest)|application (has been )?"
                      r"(received|submitted)|successfully submitted", re.I)
 
@@ -37,7 +43,10 @@ EXTRACT_JS = r"""
     for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
       if (node.querySelectorAll('input, select, textarea').length > count + 3) break;  // climbed past the question
       let text = node.innerText || '';
-      for (const s of [...skip, ...[...node.querySelectorAll('option')].map(o => o.text)]) text = text.replace(s, '');
+      for (const s of [...skip, ...[...node.querySelectorAll('option')].map(o => o.text)]) {
+        const at = s ? text.lastIndexOf(s) : -1;  // options follow the question, which can start with the same words
+        if (at >= 0) text = text.slice(0, at) + text.slice(at + s.length);
+      }
       if (clean(text)) return clean(text);
     }
     return '';
@@ -56,17 +65,21 @@ EXTRACT_JS = r"""
     if (type !== 'file' && !el.offsetParent) continue;  // invisible (file inputs are usually styled away)
     const shim = el.getAttribute('aria-hidden') === 'true' || el.tabIndex < 0;  // e.g. react-select's required-input
     if (shim && !['file', 'radio', 'checkbox'].includes(type)) continue;
-    let members = [el], options = [];
+    let members = [el], options = [], boxed = false;
     if (type === 'radio' || type === 'checkbox') {
-      if (el.name && groups.has(el.name)) continue;
-      groups.add(el.name);
-      if (el.name) members = [...document.querySelectorAll(`input[type=${type}][name="${CSS.escape(el.name)}"]`)];
+      // One question = a shared name, or a <fieldset> holding only these boxes (Ashby names each box after itself).
+      const set = el.closest('fieldset');
+      boxed = !!set && [...set.querySelectorAll('input, select, textarea')].every(m => m.type === type);
+      if (groups.has(el)) continue;
+      if (boxed) members = [...set.querySelectorAll(`input[type=${type}]`)];
+      else if (el.name) members = [...document.querySelectorAll(`input[type=${type}][name="${CSS.escape(el.name)}"]`)];
+      members.forEach(m => groups.add(m));
       options = members.map(m => clean(m.labels?.[0]?.innerText || m.value));
     }
     if (el.tagName === 'SELECT') options = [...el.options].map(o => clean(o.text)).filter(Boolean);
     const own = el.labels?.[0]?.innerText || el.getAttribute('aria-label') || byId(el.getAttribute('aria-labelledby'));
     // Workday dropdown buttons name themselves "Select One Required": the question is in the wrapper instead.
-    const grouped = members.length > 1 || el.tagName === 'SELECT' || type === 'file' || type === 'listbox';
+    const grouped = members.length > 1 || boxed || el.tagName === 'SELECT' || type === 'file' || type === 'listbox';
     const skip = type === 'listbox' ? [el.innerText] : options;
     const f = {index: out.length, type, name: el.name || '', options,
                label: clean((grouped ? '' : own) || near(el, members.length, skip) || own || el.placeholder),
@@ -80,6 +93,7 @@ EXTRACT_JS = r"""
     if (type === 'datepart') f.label += ` (${auto.replace('dateSection', '').replace('-input', '')})`;  // (Month)
     if (f.label.endsWith('*')) f.required = true;
     el.setAttribute('data-delphi', f.index);
+    members.forEach(m => m.setAttribute('data-delphi-option', f.index));
     out.push(f);
   }
   // Ashby-style Yes/No toggles: plain <button>s with no input behind them.
@@ -197,7 +211,7 @@ async def _fill(page, field, value):
     elif kind == "yesno":
         await el.get_by_role("button", name=value.strip(), exact=True).click()
     elif kind in ("radio", "checkbox"):
-        group = page.locator(f'input[type={kind}][name="{field["name"]}"]') if field["name"] else el
+        group = page.locator(f'[data-delphi-option="{field["index"]}"]')
         wanted = {v.strip().lower() for v in value.split(",")}
         single_yes = len(field["options"]) == 1 and value.strip().lower() in ("yes", "true")
         for i, option in enumerate(field["options"]):
@@ -239,6 +253,18 @@ def known_values(fields, answers):
     return values
 
 
+def _lone_box(field):
+    return field["type"] == "checkbox" and len(field["options"]) == 1
+
+
+def _box_choice(field):
+    """'tick', 'leave', or None when it's unclear (Claude, then you, decide)."""
+    text = f"{field['label']} {field['options'][0]}"
+    if SETTING.search(text) or (PROMOTIONAL.search(text) and not field["required"]):
+        return "leave"
+    return "tick" if CONSENT.search(text) else None
+
+
 def _question(field):
     options = f" [{' / '.join(field['options'])}]" if field["options"] else ""
     return field["label"] + options
@@ -254,8 +280,9 @@ async def _fill_fields(page, job, ask, fields, todo, answers):
         asked = {f["index"] for f in rest}
         values |= {f.index: f.value for f in plan.fills if f.index in asked}
         unknown = [i for i in plan.unknown if i in asked and i not in values]
-        # A required field Claude neither answered nor flagged still has to be answered: ask.
-        unknown += [i for i in asked if fields[i]["required"] and i not in values and i not in unknown]
+        # A required field (or an unclear tick box) Claude neither answered nor flagged still needs an answer: ask.
+        unknown += [i for i in asked if (fields[i]["required"] or _lone_box(fields[i]))
+                    and i not in values and i not in unknown]
     if unknown:
         for i, reply in zip(unknown, await ask([_question(fields[i]) for i in unknown]), strict=True):
             values[i] = answers[fields[i]["label"]] = reply
@@ -276,13 +303,19 @@ async def fill_form(page, job, ask, resume=None):
     fields = await read_fields(page)
     first, seen = fields, set()
     for _ in range(3):  # an answer can reveal a follow-up question (e.g. a referrer's name), so look again
-        # Optional on/off boxes ("I currently work here", "I have a preferred name") stay as the site set them:
-        # their labels repeat without context, so a guess can tick every job as current.
-        todo = [f for f in fields if (f["label"], f["type"]) not in seen and not f["filled"]
-                and not (f["type"] == "checkbox" and len(f["options"]) == 1 and not f["required"])]
+        todo = [f for f in fields if (f["label"], f["type"]) not in seen and not f["filled"]]
         if not todo:
             break
         seen |= {(f["label"], f["type"]) for f in todo}
+        # A lone tick box. "I currently work here" repeats once per job without saying which, so a guess could tick
+        # every job as current: leave those as the site set them. Anything unclear goes to Claude, then you.
+        for f in [f for f in todo if _lone_box(f) and _box_choice(f)]:
+            todo.remove(f)
+            if _box_choice(f) == "tick":
+                try:
+                    await _fill(page, f, "yes")
+                except Exception as e:
+                    log.warning("tick %r: %s", f["label"], e)
         await _fill_fields(page, job, ask, fields, todo, answers)
         fields = await read_fields(page)
     # Resume goes in the required upload if there is one, else the one labelled resume/CV, else the first.
