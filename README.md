@@ -57,6 +57,14 @@ digest goes out within an hour of waking up.
 | `/applied` | latest rows of `applied.csv` |
 | `/cost` | Claude spend: last 30 days, average per digest and per application |
 
+## Phone view
+
+Set `VNC_PASSWORD` in `.env` (max 8 characters) after `sudo apt install xvfb x11vnc novnc`. The bot's
+browser then runs on a virtual screen, and the "Submit this?" and "stuck" messages carry a link that opens
+it in your phone's browser, where you can scroll, fix a field or finish the form. The link works on your home
+Wi-Fi. For anywhere else, install [Tailscale](https://tailscale.com) on the computer and phone and set
+`PHONE_VIEW_HOST` to the computer's Tailscale name.
+
 ## applied.csv
 
 Every application gets a row: `date, company, title, location, url, source, status`. Status is

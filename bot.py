@@ -1,7 +1,12 @@
 """Telegram bot and daily digest. Run: python bot.py"""
 import asyncio
 import logging
+import atexit
 import re
+import shutil
+import socket
+import subprocess
+import time
 import urllib.request
 from datetime import datetime
 from html import escape
@@ -15,7 +20,7 @@ import apply
 import llm
 import sources
 import workday
-from config import PROFILE, env
+from config import PROFILE, ROOT, env
 from filters import keep, relevance, words
 from store import (already_applied, applied_rows, get_job, get_setting, is_new, log_application, save_job,
                    set_setting, set_status)
@@ -134,7 +139,7 @@ async def run_apply(job, bot):
             if env("CONFIRM_BEFORE_SUBMIT", "1") != "1":
                 return True
             await bot.send_document(
-                CHAT_ID, png, filename="application.png", caption="Submit this?",
+                CHAT_ID, png, filename="application.png", caption="Submit this?" + watch_hint(),
                 reply_markup=Keyboard([[Button("Submit", callback_data="confirm:yes"),
                                         Button("Cancel", callback_data="confirm:no")]]))
             return await _wait("confirm")
@@ -142,7 +147,7 @@ async def run_apply(job, bot):
         done_button = Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}")]])
 
         async def stuck(reason, png):
-            if env("HEADLESS", "1") == "1":
+            if env("HEADLESS", "1") == "1" and not env("VNC_PASSWORD"):
                 caption = f"{reason}.\n\nThis is what I filled. Finish it here: {job['url']}"
                 await bot.send_document(CHAT_ID, png, filename="form.png", caption=caption[:1024],
                                         reply_markup=done_button)
@@ -150,7 +155,8 @@ async def run_apply(job, bot):
             # Watching mode: the browser stays open on your computer until you tap a button.
             await bot.send_document(
                 CHAT_ID, png, filename="form.png",
-                caption=f"{reason}.\n\nThe browser is still open on your computer, finish it there."[:1024],
+                caption=(f"{reason}.\n\nThe browser is still open on your computer, finish it there."
+                         + watch_hint())[:1024],
                 reply_markup=Keyboard([[Button("I applied ✅", callback_data="stuck:yes"),
                                         Button("Close browser", callback_data="stuck:no")]]))
             return await _wait("stuck")
@@ -176,6 +182,38 @@ async def run_apply(job, bot):
             await bot.send_message(CHAT_ID, f"{reason}.\nFinish it here: {job['url']}\n"
                                             "Or fix the problem and tap Apply again.", reply_markup=done_button)
         # "handoff": stuck() already sent the screenshot and link.
+
+
+def start_phone_view():
+    """With VNC_PASSWORD set, the bot's browser draws on a virtual screen that your phone can open in Safari:
+    Xvfb is the screen, x11vnc shares it, noVNC (websockify) serves it as a web page on port 6080."""
+    if not all(map(shutil.which, ("Xvfb", "x11vnc", "websockify"))):
+        raise SystemExit("VNC_PASSWORD is set, so the phone view needs: sudo apt install xvfb x11vnc novnc")
+    secret = ROOT / ".vncpass"
+    secret.write_text(env("VNC_PASSWORD"))
+    secret.chmod(0o600)
+    procs = []
+    for cmd in (["Xvfb", apply.DISPLAY, "-screen", "0", "1280x900x24"],
+                ["x11vnc", "-display", apply.DISPLAY, "-rfbport", "5999", "-localhost", "-forever", "-shared",
+                 "-passwdfile", str(secret), "-quiet"],
+                ["websockify", "--web", "/usr/share/novnc", "6080", "localhost:5999"]):
+        procs.append(subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        time.sleep(1)  # each needs the one before it up
+    atexit.register(lambda: [proc.terminate() for proc in procs])
+    log.info("phone view: %s", phone_link())
+
+
+def phone_link():
+    host = env("PHONE_VIEW_HOST")  # e.g. your Tailscale name; default: this computer's address on your Wi-Fi
+    if not host:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))  # no packet is sent; this just picks the outgoing interface
+            host = s.getsockname()[0]
+    return f"http://{host}:6080/vnc.html?autoconnect=1&resize=scale"
+
+
+def watch_hint():
+    return f"\nOr from your phone: {phone_link()}" if env("VNC_PASSWORD") else ""
 
 
 async def cmd_start(update, ctx):
@@ -282,6 +320,8 @@ async def on_text(update, ctx):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    if env("VNC_PASSWORD"):
+        start_phone_view()
     app = Application.builder().token(env("TELEGRAM_BOT_TOKEN")).build()
     me = filters.Chat(CHAT_ID)  # only you can drive the bot
     app.add_handler(CommandHandler("start", cmd_start))

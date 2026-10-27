@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ from config import PROFILE, ROOT, env
 
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
+DISPLAY = ":99"  # virtual screen for the phone view (see bot.start_phone_view)
 SUPPORTED = re.compile(r"greenhouse\.io|lever\.co|ashbyhq\.com")
 # Single tick boxes: agreements get ticked, promotions stay off, the site's own on/off settings are left alone.
 CONSENT = re.compile(r"understand|agree|acknowledge|consent|accept|certify|confirm|attest|terms|privacy|allow|"
@@ -130,7 +132,11 @@ def resume_path():
 
 
 async def open_page(p, url):
-    browser = await p.chromium.launch(headless=env("HEADLESS", "1") == "1")
+    if env("VNC_PASSWORD"):  # draw on the display bot.py shares to your phone
+        browser = await p.chromium.launch(headless=False, env={**os.environ, "DISPLAY": DISPLAY},
+                                          args=["--window-position=0,0", "--window-size=1280,900"])
+    else:
+        browser = await p.chromium.launch(headless=env("HEADLESS", "1") == "1")
     page = await browser.new_page()
     page.set_default_timeout(10000)  # a widget that won't take a click fails fast instead of hanging 30s
     await page.goto(url, wait_until="networkidle", timeout=60000)

@@ -6,3 +6,4 @@ usage.csv
 delphi.db
 .venv/
 __pycache__/
+.vncpass
