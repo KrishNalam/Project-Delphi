@@ -434,6 +434,25 @@ def test_apply_command_takes_several_links():
     assert started == ["https://a.com/1", "https://b.com/2"]
 
 
+def test_describe():
+    from bot import describe
+    page = lambda title, *meta: f"<html><head><title>{title}</title>{''.join(meta)}</head>"  # noqa: E731
+    assert describe("https://boards.greenhouse.io/embed/job_app?token=1",
+                    page("Job Application for SWE Intern at Waymo")) == ("Waymo", "SWE Intern")
+    assert describe("https://jobs.ashbyhq.com/x/1", page("Dev Intern - Winter 2027 @ 1Password")) == \
+        ("1Password", "Dev Intern - Winter 2027")
+    assert describe("https://jobs.lever.co/tri/1", page("Toyota Research - ML Intern - Summer")) == \
+        ("Toyota Research", "ML Intern - Summer")
+    assert describe("https://apply.workable.com/rokt/j/1", page("Junior SWE - Residency - Rokt")) == \
+        ("Rokt", "Junior SWE - Residency")
+    assert describe("https://careers.withwaymo.com/jobs?gh_jid=1",
+                    page("x", '<meta property="og:title" content="AI Intern &amp;amp; Co">',
+                         '<meta content="Waymo" property="og:site_name">')) == ("Waymo", "AI Intern & Co")
+    # Two careers pages with no usable HTML still differ, so one doesn't look like the other already applied.
+    assert describe("https://soti.wd3.myworkdayjobs.com/x/job/Y/Software-Developer-Intern_R10620") == \
+        ("Soti", "Software Developer Intern")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

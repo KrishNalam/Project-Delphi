@@ -11,7 +11,7 @@ import subprocess
 import time
 import urllib.request
 from datetime import datetime, timedelta
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -639,19 +639,50 @@ async def cmd_applied(update, ctx):
     await update.message.reply_text(f"{len(rows)} applications. Latest:\n" + "\n".join(lines) if rows else "None yet.")
 
 
-def job_from_url(url):
-    """A job for /apply: the saved one if the digest found it, else a stub named after the link."""
-    stub = sources._job("telegram", "", "", [], url)
-    if job := get_job(stub["id"]):
-        return job
+def describe(url, html=""):
+    """(company, title) of a posting, from its page's <title> and og: tags in each site's format, else guessed from
+    the link. A guess like ("Jobs", "jobs") for every careers page would make each later one look already applied."""
+    def tag(pattern):
+        match = re.search(pattern, html, re.I | re.S)
+        return unescape(unescape(" ".join(match[1].split()))) if match else ""
+
+    def meta(prop):
+        return (tag(rf'<meta[^>]+property="{prop}"[^>]*content="([^"]*)"')
+                or tag(rf'<meta[^>]+content="([^"]*)"[^>]*property="{prop}"'))
+
+    page, host = tag(r"<title[^>]*>(.*?)</title>"), urlparse(url).netloc
+    if match := re.match(r"job application for (.+) at (.+)$", page, re.I):  # Greenhouse
+        return match[2], match[1]
+    if " @ " in page:  # Ashby: "Title @ Company"
+        title, company = page.rsplit(" @ ", 1)
+        return company, title
+    if " - " in page and "lever.co" in host:  # "Company - Title"
+        return tuple(page.split(" - ", 1))
+    if " - " in page and "workable.com" in host:  # "Title - Company"
+        title, company = page.rsplit(" - ", 1)
+        return company, title
     # e.g. altera.wd1.myworkdayjobs.com/.../Software-Intern_R03373 -> Altera, "Software Intern"
-    host, slug = urlparse(url).netloc, urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+    slug = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
     # jobs.lever.co/acme/..., boards.greenhouse.io/acme/...: the company is the first path segment
     name = host.removeprefix("www.").split(".")[0]
     if name in ("jobs", "boards", "job-boards", "apply", "careers"):
         name = urlparse(url).path.strip("/").split("/")[0] or name
-    stub["company"] = name.title()
-    stub["title"] = re.sub(r"_R?\d+$", "", slug).replace("-", " ").strip() or url
+    title = meta("og:title") or page or re.sub(r"_R?\d+$", "", slug).replace("-", " ").strip() or url
+    return meta("og:site_name") or name.title(), title
+
+
+def job_from_url(url):
+    """A job for /apply: the saved one if the digest found it, else one named from the posting's page."""
+    stub = sources._job("telegram", "", "", [], url)
+    if job := get_job(stub["id"]):
+        return job
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=20) as r:
+            html = r.read(500_000).decode("utf-8", "replace")
+    except Exception:  # the link alone still names it, roughly
+        html = ""
+    stub["company"], stub["title"] = (part.strip() for part in describe(url, html))
     save_job(stub)
     return stub
 
@@ -663,7 +694,7 @@ async def cmd_apply(update, ctx):
         await update.message.reply_text("Send /apply <link to the posting>, or several links to do them in turn")
         return
     for url in dict.fromkeys(urls):  # each once, in the order sent
-        ctx.application.create_task(run_apply(job_from_url(url), ctx.bot))
+        ctx.application.create_task(run_apply(await asyncio.to_thread(job_from_url, url), ctx.bot))
 
 
 async def on_button(update, ctx):
