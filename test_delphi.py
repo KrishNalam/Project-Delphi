@@ -171,6 +171,36 @@ def test_answer_once():
     assert not bot._answer("text", "nobody's waiting")
 
 
+def test_auto_apply_picks():
+    """/auto 8: only picks scoring 8+ on fillable sites start by themselves, and they get no Apply button."""
+    import asyncio
+
+    import bot
+    picks = [dict(job(title="A Intern"), url="https://jobs.lever.co/a/1", score=9, why="x"),
+             dict(job(title="B Intern"), url="https://jobs.lever.co/b/2", score=7, why="x"),
+             dict(job(title="C Intern"), url="https://www.linkedin.com/jobs/view/3", score=9, why="x")]
+    started, sent = [], []
+
+    class App:
+        class bot:  # noqa: N801
+            async def send_message(chat, text, reply_markup=None, **kw):
+                sent.append((text.split("</b>")[0][3:], reply_markup is not None, text.rsplit("· ", 1)[-1]))
+
+        def create_task(coro):
+            started.append(coro.cr_frame.f_locals["job"]["title"])
+            coro.close()
+    saved = bot.find_jobs, bot.get_setting
+    bot.find_jobs = lambda: picks
+    bot.get_setting = lambda key: 8 if key == "auto_min" else saved[1](key)
+    try:
+        assert asyncio.run(bot.send_digest(App))
+    finally:
+        bot.find_jobs, bot.get_setting = saved
+    assert started == ["A Intern"], started
+    assert sent == [("A Intern", False, "auto-applying"), ("B Intern", True, "auto-fill"),
+                    ("C Intern", True, "fill it yourself")], sent
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
