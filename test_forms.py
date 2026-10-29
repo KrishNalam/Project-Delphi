@@ -107,7 +107,7 @@ def test_fill_and_submit():
         return apply._last_page
     apply.open_page = remember
     try:
-        status = asyncio.run(apply.apply({"title": "Intern", "company": "Acme", "url": (tmp / "form.html").as_uri()},
+        status = asyncio.run(apply.apply({"id": "test-form", "title": "Intern", "company": "Acme", "url": (tmp / "form.html").as_uri()},
                                          ask, confirm, stuck))
     finally:
         apply.open_page = open_page

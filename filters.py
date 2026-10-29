@@ -13,15 +13,26 @@ NO_SPONSOR = re.compile(
 )
 
 
+DEGREES = [("phd", r"ph\.?d|doctor"), ("mba", r"mba"), ("master", r"master|m\.?sc|m\.?eng|m\.?a\b|m\.?s\b"),
+           ("bachelor", r"bachelor|undergrad|b\.?sc|b\.?eng|b\.?a\b|b\.?s\b|bcomm?|bmath"),
+           ("associate", r"associate")]
+
+
+def degree_kind(text):
+    """'Bachelor's', 'BSc', 'undergrad' -> 'bachelor'; 'Ph.D' -> 'phd'. Unknown wording stays as typed."""
+    low = text.lower()
+    return next((kind for kind, pattern in DEGREES if re.search(rf"\b({pattern})", low)), low.strip())
+
+
 def keep(job, countries, needs_us_sponsorship=True, degree=None, terms=()):
     """Internship-ish title, in an enabled country, and (for the US) not ruling out sponsorship. With `degree`
     ("Bachelor's") or `terms` (["Summer 2027"]) from the profile, listings that say they're for other degrees
     (PhD-only) or other terms are dropped; ones that don't say are kept."""
     if not INTERN.search(job["title"]):
         return False
-    if degree and job.get("degrees") and degree.lower() not in (d.lower() for d in job["degrees"]):
+    if degree and job.get("degrees") and degree_kind(degree) not in {degree_kind(d) for d in job["degrees"]}:
         return False
-    listed = [t.lower() for t in job.get("terms", [])]
+    listed = [part.strip() for t in job.get("terms", []) for part in re.split(r"[/,]", t.lower())]  # "Spring/Summer"
     # "Summer" (vanshb03's season) and "Summer 2027" (Simplify's term) match either way round.
     if terms and listed and not any(a in b or b in a for a in (t.lower() for t in terms) for b in listed):
         return False

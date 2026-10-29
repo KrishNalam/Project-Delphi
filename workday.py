@@ -16,7 +16,7 @@ from playwright.async_api import async_playwright
 
 from apply import SUCCESS, _wait_count, fill_form, open_page, resume_path, settle
 from config import PROFILE, env
-from store import get_setting, set_setting
+from store import get_setting, set_setting, set_status
 
 log = logging.getLogger(__name__)
 WORKDAY = re.compile(r"\.myworkdayjobs\.com/|\.myworkdaysite\.com/")
@@ -234,6 +234,7 @@ async def apply(job, ask, confirm, stuck):
                     await _next_ready(page)  # so the screenshot shows the summary, not a spinner
                     if not await confirm(await page.screenshot(full_page=True)):
                         return "cancelled"
+                    set_status(job["id"], "submitting")  # from here a restart can't tell whether it went through
                     await _next(page)  # labelled Submit on this page
                     await page.wait_for_timeout(4000)
                     if SUCCESS.search(await page.inner_text("body")):

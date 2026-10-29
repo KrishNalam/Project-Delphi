@@ -24,8 +24,9 @@ import llm
 import sources
 import workday
 from config import PROFILE, ROOT, env
-from filters import block_term, blocked, keep, relevance, words
-from store import (_key, already_applied, applied_rows, canonical, get_job, get_setting, is_new, jobs_with_status,
+from filters import DEGREES, block_term, blocked, degree_kind, keep, relevance, words
+from store import (_key, already_applied, applied_rows, canonical, get_job, get_setting, is_new, job_status,
+                   jobs_with_status,
                    log_application, save_job, set_setting, set_status, status_counts, update_job)
 
 log = logging.getLogger("delphi")
@@ -171,8 +172,11 @@ async def tick(ctx):
     now = datetime.now(TZ)
     today = now.date().isoformat()
     if now.weekday() == 6 and now.hour >= 18 and get_setting("last_weekly") != today:  # Sunday evening
-        set_setting("last_weekly", today)
-        await send_week(ctx.application.bot)
+        try:
+            await send_week(ctx.application.bot)
+            set_setting("last_weekly", today)
+        except Exception:  # retried next hour; the digest check below still runs
+            log.exception("weekly summary")
     if get_setting("paused") or now.hour < DIGEST_HOUR or get_setting("last_digest") == today:
         return
     if await send_digest(ctx.application, quiet_failure=failed_on == today):
@@ -252,6 +256,7 @@ async def find_form(url):
 
 async def run_apply(job, bot):
     global running, queued
+    set_status(job["id"], "queued")  # in memory only until it runs: a restart brings it back (resume_interrupted)
     if apply_lock.locked():
         await bot.send_message(CHAT_ID, f"Queued {job['title']} @ {job['company']}, it starts when "
                                         f"{running['company'] if running else 'the current one'} is done.")
@@ -342,16 +347,28 @@ async def _run_apply(job, bot):
 
 
 async def resume_interrupted(app):
-    """At startup: applications the bot was in the middle of when it stopped (crash, restart, reboot) get an
-    Apply button again, since nothing was submitted and nothing else would bring them back."""
-    for job in jobs_with_status(("applying",), 30):
-        set_status(job["id"], "shown")
+    """At startup: applications the bot was queued for or in the middle of when it stopped (crash, restart, reboot)
+    get a button again, since nothing else would bring them back. One stopped at or after Submit may have gone
+    through, so that one says so instead of offering a plain retry."""
+    for job in jobs_with_status(("queued", "applying", "submitting"), 30):
         if already_applied(job):
+            set_status(job["id"], "submitted")
             continue
-        await app.bot.send_message(
-            CHAT_ID, f"I restarted while applying to {job['title']} @ {job['company']}, so it wasn't sent.",
-            reply_markup=Keyboard([[Button("Apply again", callback_data=f"apply:{job['id']}"),
-                                    Button("Skip", callback_data=f"skip:{job['id']}")]]))
+        name = f"{job['title']} @ {job['company']}"
+        if job_status(job["id"]) == "submitting":
+            text = f"I restarted just after submitting {name}. It may have gone through: check your email."
+            buttons = [Button("It went through ✅", callback_data=f"done:{job['id']}"),
+                       Button("Apply again", callback_data=f"apply:{job['id']}")]
+        else:
+            text = f"I restarted before finishing {name}, so it wasn't sent."
+            buttons = [Button("Apply again", callback_data=f"apply:{job['id']}"),
+                       Button("Skip", callback_data=f"skip:{job['id']}")]
+        try:
+            await app.bot.send_message(CHAT_ID, text, reply_markup=Keyboard([buttons]))
+        except Exception:  # Telegram not reachable yet at boot: it stays as it is for the next start
+            log.exception("telling you about %s", job["url"])
+            continue
+        set_status(job["id"], "shown")
 
 
 COMMANDS = [  # shown in Telegram's / menu
@@ -368,7 +385,10 @@ COMMANDS = [  # shown in Telegram's / menu
 async def on_start(app):
     with contextlib.suppress(Exception):  # cosmetic; never block startup on it
         await app.bot.set_my_commands(COMMANDS)
-    await resume_interrupted(app)
+    try:
+        await resume_interrupted(app)
+    except Exception:  # never keep the bot from starting
+        log.exception("resuming interrupted applications")
 
 
 def start_phone_view():
@@ -653,6 +673,9 @@ def check():
     if need((ROOT / "profile.yaml").exists(), "no profile.yaml: cp profile.example.yaml profile.yaml and fill it in"):
         for key in ("first_name", "last_name", "email", "phone", "resume_text", "work_auth"):
             need(PROFILE.get(key), f"profile.yaml: {key} is empty")
+        if (level := PROFILE.get("degree_level")) and degree_kind(level) not in {k for k, _ in DEGREES}:
+            problems.append(f"profile.yaml: degree_level '{level}' isn't one I know (Bachelor's, Master's, PhD, MBA, "
+                            "Associate's), so it would hide every listing that names a degree")
         try:
             apply.resume_path()
             for variant in PROFILE.get("resumes") or []:

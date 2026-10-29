@@ -77,6 +77,11 @@ def jobs_with_status(statuses, days):
     return [json.loads(data) for (data,) in rows]
 
 
+def job_status(job_id):
+    rows = _run("select status from jobs where id = ?", (job_id,))
+    return rows[0][0] if rows else None
+
+
 def status_counts():
     """{'shown': 12, 'submitted': 3, ...} over every job ever seen."""
     return dict(_run("select status, count(*) from jobs group by status"))

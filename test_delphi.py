@@ -46,6 +46,11 @@ def test_keep():
     assert not keep(job(terms=["Winter 2027"]), both, terms=["Summer 2027"])
     assert keep(job(terms=["Summer"]), both, terms=["Summer 2027"])  # vanshb03's season
     assert keep(job(terms=["N/A"]), both, terms=["Summer 2027"])
+    for mine in ["Bachelors", "BSc", "B.Eng", "undergraduate", "bachelor's degree"]:
+        assert keep(job(degrees=["Bachelor's"]), both, degree=mine), mine
+        assert not keep(phd, both, degree=mine), mine
+    assert keep(job(degrees=["Master's"]), both, degree="MSc") and keep(phd, both, degree="Ph.D.")
+    assert keep(job(terms=["Spring/Summer"]), both, terms=["Summer 2027"])
 
 
 def test_relevance():
@@ -329,17 +334,24 @@ def test_resume_interrupted():
             async def send_message(chat, text, reply_markup=None, **kw):
                 sent.append((text, [b.callback_data for b in reply_markup.inline_keyboard[0]]))
     try:
-        cut, done = (_job("t", "Acme", t, [], f"https://acme.com/{t}") for t in ("Cut off", "Got there"))
-        for j in (cut, done):
+        cut, waiting, sending, done = (_job("t", "Acme", t, [], f"https://acme.com/{t}")
+                                       for t in ("Cut off", "Queued", "Sending", "Got there"))
+        for j, status in [(cut, "applying"), (waiting, "queued"), (sending, "submitting"), (done, "applying")]:
             store.save_job(j)
-            store.set_status(j["id"], "applying")
-        log_application(done, "submitted")  # crashed after submitting: nothing to redo
+            store.set_status(j["id"], status)
+        log_application(done, "submitted")  # crashed after logging: nothing to redo
         asyncio.run(bot.resume_interrupted(App))
-        assert store.jobs_with_status(("applying",), 30) == []
+        assert store.jobs_with_status(("queued", "applying", "submitting"), 30) == []
+        assert store.job_status(done["id"]) == "submitted"
     finally:
         store.DB, store.APPLIED_CSV = saved
-    assert sent == [("I restarted while applying to Cut off @ Acme, so it wasn't sent.",
-                     [f"apply:{cut['id']}", f"skip:{cut['id']}"])], sent
+    assert sorted(sent) == sorted([
+        ("I restarted before finishing Cut off @ Acme, so it wasn't sent.", [f"apply:{cut['id']}", f"skip:{cut['id']}"]),
+        ("I restarted before finishing Queued @ Acme, so it wasn't sent.",
+         [f"apply:{waiting['id']}", f"skip:{waiting['id']}"]),
+        # Might have gone through: no plain retry offered first.
+        ("I restarted just after submitting Sending @ Acme. It may have gone through: check your email.",
+         [f"done:{sending['id']}", f"apply:{sending['id']}"])]), sent
 
 
 def test_resume_variants():

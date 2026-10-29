@@ -19,7 +19,7 @@ from playwright.async_api import async_playwright
 
 import llm
 from config import PROFILE, ROOT, env
-from store import canonical
+from store import canonical, set_status
 
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
@@ -480,7 +480,7 @@ async def fill_form(page, job, ask, resume=None):
     if await _upload_files(page, job, fields, resume, answers):
         await settle(page)
         with contextlib.suppress(Exception):  # Lever's "Analyzing resume..."
-            await page.get_by_text(re.compile(r"analyzing|parsing|uploading", re.I)).first.wait_for(
+            await page.get_by_text(re.compile(r"^\s*(analyzing|parsing)( your)? (resume|cv)", re.I)).first.wait_for(
                 state="hidden", timeout=20000)
         fields = await read_fields(page)
     first, seen = fields, set()
@@ -511,8 +511,9 @@ async def fill_form(page, job, ask, resume=None):
 def _file_kind(field):
     """What an upload wants, from its label and name (Greenhouse labels both "Attach" but names them resume / cover_letter)."""
     text = f"{field['label']} {field['name']}"
-    for kind, pattern in [("autofill", r"autofill"), ("cover", r"cover"), ("transcript", r"transcript"),
-                          ("resume", r"resume|\bcv\b|curriculum")]:
+    # Resume before cover: "Resume or cover letter" is the one upload, and the resume is what it must get.
+    for kind, pattern in [("autofill", r"autofill"), ("resume", r"resume|\bcv\b|curriculum"), ("cover", r"cover"),
+                          ("transcript", r"transcript")]:
         if re.search(pattern, text, re.I):
             return kind
     return "other"
@@ -550,7 +551,7 @@ async def posting_text(page, job):
         text = job.get("description") or ""
         if len(text) < 500:
             ad_url = canonical(job["url"])  # Lever/Ashby/Workable forms are a page off the ad: /apply, /application
-            if canonical(page.url) == ad_url:  # Greenhouse: the ad is above the form
+            if page.url.split("?")[0].rstrip("/") == ad_url.split("?")[0]:  # Greenhouse: the ad is above the form
                 text = await page.inner_text("body")
             else:
                 ad = await page.context.browser.new_page()
@@ -667,6 +668,7 @@ async def apply(job, ask, confirm, stuck):
                 raise RuntimeError("found no form fields on the page")
             if not await confirm(await page.screenshot(full_page=True)):
                 return "cancelled"
+            set_status(job["id"], "submitting")  # from here a restart can't tell whether it went through
             await _submit(page)
             if SUCCESS.search(await page.inner_text("body")):
                 return "submitted"
