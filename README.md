@@ -92,6 +92,13 @@ Ranking and Quercus scanning use Haiku at low effort on a keyword-shortlisted 60
 filling uses Opus, but only for fields that aren't already known from your profile or saved
 answers, and the profile + resume part of that prompt is cached.
 
+## Cover letters
+
+When a form requires a cover letter upload, Claude writes one for that job from the posting and your resume
+(three short paragraphs, nothing invented) and uploads it as a PDF. Each one is kept in `cover_letters/`.
+`COVER_LETTER=always` in `.env` also fills optional cover letter uploads; `never` leaves them all empty. Essay
+questions like "Why us?" are answered with the job posting in front of Claude too.
+
 ## Answers
 
 Anything you answer is saved in `answers.json` under the question's label and reused on later

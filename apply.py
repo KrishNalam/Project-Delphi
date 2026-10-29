@@ -11,12 +11,15 @@ import logging
 import os
 import re
 import sys
+from datetime import date
+from html import escape
 from pathlib import Path
 
 from playwright.async_api import async_playwright
 
 import llm
 from config import PROFILE, ROOT, env
+from store import canonical
 
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
@@ -429,7 +432,9 @@ async def _fill_fields(page, job, ask, fields, todo, answers):
     rest = [f for f in todo if f["index"] not in values and f["type"] != "file"]
     unknown = []
     if rest:  # only what we couldn't fill ourselves goes to Claude
-        plan = await asyncio.to_thread(llm.map_fields, job, rest, answers)
+        # Essay questions ("Why us?") get the job ad too, so the answer can be about this team, not generic.
+        posting = await posting_text(page, job) if any(f["type"] == "textarea" for f in rest) else ""
+        plan = await asyncio.to_thread(llm.map_fields, job, rest, answers, posting)
         asked = {f["index"] for f in rest}
         values |= {f.index: f.value for f in plan.fills if f.index in asked}
         unknown = [i for i in plan.unknown if i in asked and i not in values]
@@ -484,12 +489,96 @@ async def fill_form(page, job, ask, resume=None):
                     log.warning("tick %r: %s", f["label"], e)
         await _fill_fields(page, job, ask, fields, todo, answers)
         fields = await read_fields(page)
-    # Resume goes in the required upload if there is one, else the one labelled resume/CV, else the first.
-    files = sorted((f for f in fields if f["type"] == "file"),
-                   key=lambda f: (not f["required"], not re.search(r"resume|cv", f"{f['label']} {f['name']}", re.I)))
-    if resume and files:
-        await page.locator(f'[data-delphi="{files[0]["index"]}"]').set_input_files(resume)
+    await _upload_files(page, job, fields, resume, answers)
     return first
+
+
+def _file_kind(field):
+    """What an upload wants, from its label and name (Greenhouse labels both "Attach" but names them resume / cover_letter)."""
+    text = f"{field['label']} {field['name']}"
+    for kind, pattern in [("autofill", r"autofill"), ("cover", r"cover"), ("transcript", r"transcript"),
+                          ("resume", r"resume|\bcv\b|curriculum")]:
+        if re.search(pattern, text, re.I):
+            return kind
+    return "other"
+
+
+async def _upload_files(page, job, fields, resume, answers):
+    """Resume into the upload labelled for it (else the required unlabelled one, else the first unlabelled one).
+    Never into "Autofill from resume" (Ashby would overwrite the answers). A cover letter is written for the job when
+    the upload is required (COVER_LETTER=always: whenever there's one, never: not at all), and transcript_pdf from
+    profile.yaml goes in a transcript upload."""
+    files = [f for f in fields if f["type"] == "file" and _file_kind(f) != "autofill"]
+    targets = sorted((f for f in files if _file_kind(f) in ("resume", "other")),
+                     key=lambda f: (_file_kind(f) != "resume", not f["required"]))
+    uploads = {targets[0]["index"]: resume} if resume and targets else {}
+    cover = env("COVER_LETTER", "required")
+    for f in files:
+        kind = _file_kind(f)
+        if kind == "cover" and cover != "never" and (f["required"] or cover == "always"):
+            try:
+                uploads[f["index"]] = await cover_letter_pdf(page, job, answers)
+            except Exception as e:  # the screenshot shows the empty upload; you can attach one yourself
+                log.warning("cover letter for %s: %s", job["company"], e)
+        elif kind == "transcript" and PROFILE.get("transcript_pdf"):
+            transcript = Path(PROFILE["transcript_pdf"]).expanduser()
+            if transcript.is_file():
+                uploads[f["index"]] = transcript
+    for index, path in uploads.items():
+        await page.locator(f'[data-delphi="{index}"]').set_input_files(path)
+
+
+async def posting_text(page, job):
+    """The job ad's text, for cover letters and essay answers. Read once per application and kept on the job."""
+    if job.get("posting") is None:
+        text = job.get("description") or ""
+        if len(text) < 500:
+            ad_url = canonical(job["url"])  # Lever/Ashby/Workable forms are a page off the ad: /apply, /application
+            if canonical(page.url) == ad_url:  # Greenhouse: the ad is above the form
+                text = await page.inner_text("body")
+            else:
+                ad = await page.context.browser.new_page()
+                try:
+                    await settle(ad, ad_url)
+                    text = await ad.inner_text("body")
+                except Exception as e:
+                    log.warning("reading the posting %s: %s", ad_url, e)
+                finally:
+                    await ad.close()
+        job["posting"] = re.sub(r"\n\s*\n+", "\n", text).strip()[:6000]
+    return job["posting"]
+
+
+COVER_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
+  body {{ font: 11pt/1.45 Georgia, serif; color: #111; margin: 0 }}
+  h1 {{ font-size: 16pt; margin: 0 0 2pt }} .contact {{ color: #444; font-size: 9.5pt; margin-bottom: 18pt }}
+  p {{ margin: 0 0 10pt }}
+</style></head><body><h1>{name}</h1><div class="contact">{contact}</div>
+<p>{today}</p><p>Dear {company} hiring team,</p>{body}<p>Sincerely,<br>{name}</p></body></html>"""
+
+
+async def cover_letter_pdf(page, job, answers):
+    """Write this job's cover letter with Claude and print it to cover_letters/<company>-<title>.pdf."""
+    paragraphs = await asyncio.to_thread(llm.cover_letter, job, await posting_text(page, job), answers)
+    p = PROFILE
+    name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+    contact = " · ".join(str(v) for v in (p.get("email"), p.get("phone"), p.get("city"), p.get("linkedin")) if v)
+    html = COVER_HTML.format(name=escape(name), contact=escape(contact), company=escape(job["company"]),
+                             today=date.today().strftime("%B %-d, %Y"),
+                             body="".join(f"<p>{escape(par)}</p>" for par in paragraphs))
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{job['company']} {job['title']}".lower()).strip("-")[:80] or "cover-letter"
+    path = ROOT / "cover_letters" / f"{slug}.pdf"
+    path.parent.mkdir(exist_ok=True)
+    # A separate headless browser: printing to PDF doesn't work in the visible one the phone view uses.
+    printer = await page.context.browser.browser_type.launch()
+    try:
+        doc = await printer.new_page()
+        await doc.set_content(html)
+        await doc.pdf(path=str(path), format="Letter", margin={"top": "0.9in", "bottom": "0.9in",
+                                                                "left": "1in", "right": "1in"})
+    finally:
+        await printer.close()
+    return path
 
 
 SUBMIT = re.compile(r"^\s*submit( my| your)?( application)?\s*$", re.I)

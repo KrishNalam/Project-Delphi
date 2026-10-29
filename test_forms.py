@@ -18,6 +18,7 @@ FORM = """<!doctype html><html><head><style>
 </style></head><body>
 <div id="cookies"><button onclick="this.parentElement.remove()">Decline all</button></div>
 <ul style="display:none"><li role="option">Canada +1</li><li role="option">Yes</li></ul>
+<h2>About the role</h2><p>Acme builds rocket-powered roller skates for road runners.</p>
 <form onsubmit="event.preventDefault(); askCode()">
   <label for="first">First Name*</label><input id="first" required>
   <label for="email">Email*</label><input id="email" type="email" required>
@@ -30,6 +31,8 @@ FORM = """<!doctype html><html><head><style>
     <label><input type="radio" name="p" value="she" required>She/her</label><label><input type="radio" name="p" value="he">He/him</label>
   </fieldset>
   <label for="resume">Resume</label><input type="file" id="resume">
+  <label for="cover">Cover Letter*</label><input type="file" id="cover" required>
+  <label for="why">Why Acme?</label><textarea id="why"></textarea>
   <button type="submit">Submit application</button>
 </form>
 <div style="height:400px"></div>
@@ -67,12 +70,17 @@ def test_fill_and_submit():
     apply.SUPPORTED = apply.re.compile(r"^file:")
     seen = {}
 
-    def fake_map(job, fields, answers):
+    def fake_map(job, fields, answers, posting=""):
         seen.update({f["label"]: f for f in fields})
-        values = {"Are you authorized to work in Canada?": "Yes", "Graduation date": "04/30/2028"}
+        seen["posting"] = posting
+        values = {"Are you authorized to work in Canada?": "Yes", "Graduation date": "04/30/2028",
+                  "Why Acme?": "Skates."}
         return llm.FormPlan(fills=[llm.Fill(index=f["index"], value=values[f["label"]])
                                    for f in fields if f["label"] in values], unknown=[])
     llm.map_fields = fake_map
+    llm.cover_letter = lambda job, posting, answers: seen.setdefault("letter_posting", posting) and [
+        "I build things that go fast.", "Second paragraph."]
+    apply.ROOT = tmp
     asked, filled = [], {}
 
     async def ask(questions):
@@ -84,7 +92,8 @@ def test_fill_and_submit():
         filled.update(await page.evaluate("""() => {
             const $ = id => document.getElementById(id);
             return {auth: window.picked, city: $('city').value, grad: $('grad').value, first: $('first').value,
-                    pronoun: document.querySelector('[name=p]:checked')?.value, resume: $('resume').files.length};
+                    pronoun: document.querySelector('[name=p]:checked')?.value, resume: $('resume').files[0]?.name,
+                    cover: $('cover').files[0]?.name};
         }"""))
         return True
 
@@ -106,7 +115,11 @@ def test_fill_and_submit():
     assert auth["options"] == ["Yes", "No", "Not sure"] and auth["required"], auth  # visible choices only, CSS '*'
     assert seen["Graduation date"]["placeholder"] == "MM/DD/YYYY"
     assert filled == {"auth": "Yes", "city": "Toronto, ON, Canada", "grad": "04/30/2028", "first": "Ada",
-                      "pronoun": "she", "resume": 1}, filled
+                      "pronoun": "she", "resume": "resume.pdf", "cover": "acme-intern.pdf"}, filled
+    # The essay question and the cover letter both got the job ad's text.
+    assert "rocket-powered roller skates" in seen["posting"] and "rocket-powered" in seen["letter_posting"]
+    letter = tmp / "cover_letters" / "acme-intern.pdf"
+    assert letter.read_bytes().startswith(b"%PDF") and letter.stat().st_size > 1000
     assert asked[0].startswith("Pronouns") and "verification code" in asked[1], asked
     assert json.loads(apply.ANSWERS.read_text()) == {"Pronouns": "She/her"}  # the code isn't saved as an answer
     assert status == "submitted", status
@@ -124,7 +137,8 @@ def test_bot_flow():
     (tmp / "resume.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
     apply.ANSWERS = tmp / "answers.json"
     apply.SUPPORTED = apply.re.compile(r"^file:")
-    llm.map_fields = lambda job, fields, answers: llm.FormPlan(fills=[], unknown=[])
+    llm.map_fields = lambda job, fields, answers, posting="": llm.FormPlan(fills=[], unknown=[])
+    llm.cover_letter = lambda job, posting, answers: ["Hello."]
     sent, stale, cleared = [], [], []
 
     class FakeBot:

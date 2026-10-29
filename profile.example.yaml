@@ -38,6 +38,7 @@ experience:
 skills: [Python, Java, SQL]
 
 resume_pdf: /home/krish/resume.pdf
+transcript_pdf: # optional, uploaded where a form asks for a transcript
 
 # Voluntary self-identification. Blank = "decline to answer".
 eeo:
