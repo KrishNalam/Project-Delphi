@@ -273,6 +273,35 @@ def test_blocked():
     assert blocked(_job("t", "Machine", "Learning Intern", [], "u"), ["machine learning"]) is None
 
 
+def test_week():
+    import asyncio
+
+    import bot
+    import store
+    saved = store.DB, store.APPLIED_CSV
+    store.DB = store.open_db(":memory:")
+    store.APPLIED_CSV = Path(tempfile.mkdtemp()) / "applied.csv"
+    sent = []
+
+    class Bot:
+        async def send_message(chat, text, reply_markup=None, **kw):
+            sent.append((text, reply_markup and [b.callback_data for b in reply_markup.inline_keyboard[0]]))
+    try:
+        done, stuck, finished = (_job("t", "Acme", t, [], f"https://acme.com/{t}") for t in ("A", "B", "C"))
+        for j, status in [(done, "submitted"), (stuck, "handoff"), (finished, "handoff")]:
+            store.save_job(j)
+            store.set_status(j["id"], status)
+        log_application(done, "submitted")
+        log_application(finished, "manual")  # you finished it after the bot handed it over: not listed again
+        asyncio.run(bot.send_week(Bot))
+    finally:
+        store.DB, store.APPLIED_CSV = saved
+    assert sent[0][0].startswith("This week: 2 applications (1 submitted by me, 1 finished by you)"), sent
+    assert "1 I couldn't finish" in sent[0][0]
+    assert sent[1][0].startswith("<b>B</b> · Acme") and sent[1][1] == [f"done:{stuck['id']}", f"skip:{stuck['id']}"]
+    assert len(sent) == 2
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -10,7 +10,7 @@ import socket
 import subprocess
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -24,8 +24,8 @@ import sources
 import workday
 from config import PROFILE, ROOT, env
 from filters import block_term, blocked, keep, relevance, words
-from store import (_key, already_applied, applied_rows, canonical, get_job, get_setting, is_new, log_application,
-                   save_job, set_setting, set_status, status_counts, update_job)
+from store import (_key, already_applied, applied_rows, canonical, get_job, get_setting, is_new, jobs_with_status,
+                   log_application, save_job, set_setting, set_status, status_counts, update_job)
 
 log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
@@ -136,6 +136,29 @@ async def send_digest(app, quiet_failure=False):
     return sent_all
 
 
+UNFINISHED = ("handoff", "failed", "unsupported")  # applications that ended with the link handed to you
+
+
+async def send_week(bot):
+    """This week's applications, the ones still waiting on you (with their links and an I-applied button each),
+    and what Claude cost."""
+    week_ago = (datetime.now(TZ) - timedelta(days=7)).date().isoformat()
+    rows = [r for r in applied_rows() if r["date"] > week_ago]
+    by_bot = sum(r["status"] == "submitted" for r in rows)
+    open_jobs = [j for j in jobs_with_status(UNFINISHED, 7) if not already_applied(j)]
+    await bot.send_message(
+        CHAT_ID, f"This week: {len(rows)} applications ({by_bot} submitted by me, {len(rows) - by_bot} finished by "
+                 f"you), Claude ${llm.spend_since(7):.2f}."
+                 + (f"\n{len(open_jobs)} I couldn't finish are below." if open_jobs else ""))
+    for job in open_jobs[:10]:
+        await bot.send_message(
+            CHAT_ID, f"<b>{escape(job['title'])}</b> · {escape(job['company'])}\n"
+                     f"<a href=\"{escape(job['url'])}\">Finish it here</a>",
+            parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}"),
+                                    Button("Drop it", callback_data=f"skip:{job['id']}")]]))
+
+
 failed_on = ""  # the day a scheduled digest last failed, so the retries that day don't each send an error
 
 
@@ -145,6 +168,9 @@ async def tick(ctx):
     global failed_on
     now = datetime.now(TZ)
     today = now.date().isoformat()
+    if now.weekday() == 6 and now.hour >= 18 and get_setting("last_weekly") != today:  # Sunday evening
+        set_setting("last_weekly", today)
+        await send_week(ctx.application.bot)
     if get_setting("paused") or now.hour < DIGEST_HOUR or get_setting("last_digest") == today:
         return
     if await send_digest(ctx.application, quiet_failure=failed_on == today):
@@ -477,6 +503,10 @@ async def cmd_unblock(update, ctx):
     await update.message.reply_text(f"Unblocked '{term}'.")
 
 
+async def cmd_week(update, ctx):
+    await send_week(ctx.bot)
+
+
 async def cmd_cost(update, ctx):
     await update.message.reply_text(llm.usage_summary())
 
@@ -627,7 +657,8 @@ def main():
     for name, fn in [("country", cmd_country), ("count", cmd_count), ("pause", cmd_pause),
                      ("resume", cmd_resume), ("applied", cmd_applied), ("cost", cmd_cost),
                      ("apply", cmd_apply), ("auto", cmd_auto), ("status", cmd_status), ("answers", cmd_answers),
-                     ("forget", cmd_forget), ("block", cmd_block), ("unblock", cmd_unblock)]:
+                     ("forget", cmd_forget), ("block", cmd_block), ("unblock", cmd_unblock),
+                     ("week", cmd_week)]:
         app.add_handler(CommandHandler(name, fn, me))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))

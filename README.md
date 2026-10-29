@@ -62,6 +62,7 @@ digest goes out within an hour of waking up.
 | `/block <company or word>`, `/unblock` | never show (or auto-apply to) a company, or titles with a word, e.g. `/block phd`. Digest jobs have a 🚫 Company button too |
 | `/applied` | latest rows of `applied.csv` |
 | `/cost` | Claude spend: last 30 days, average per digest and per application |
+| `/week` | this week's applications, and the ones it couldn't finish with their links (also sent Sunday evenings) |
 
 ## Phone view
 

@@ -8,17 +8,25 @@ from datetime import date
 
 from config import ROOT
 
-DB = sqlite3.connect(ROOT / "delphi.db", check_same_thread=False)
+def open_db(path):
+    db = sqlite3.connect(path, check_same_thread=False)
+    db.executescript("""
+    create table if not exists jobs (id text primary key, data text, status text default 'new',
+                                     seen_at text default current_timestamp);
+    create table if not exists settings (key text primary key, value text);
+    """)
+    if "updated_at" not in [row[1] for row in db.execute("pragma table_info(jobs)")]:  # databases from before /week
+        db.execute("alter table jobs add column updated_at text")
+        db.commit()
+    return db
+
+
+DB = open_db(ROOT / "delphi.db")
 LOCK = threading.RLock()  # the digest runs in a worker thread while Telegram handlers use the same connection
-DB.executescript("""
-create table if not exists jobs (id text primary key, data text, status text default 'new',
-                                 seen_at text default current_timestamp);
-create table if not exists settings (key text primary key, value text);
-""")
 # auto_min: digest picks scoring at least this get applied to without a tap (None = off).
 DEFAULTS = {"countries": ["canada", "usa"], "count": 8, "paused": False, "last_digest": "", "workday_accounts": [],
             "auto_min": None, "source_counts": {},
-            "blocked": []}
+            "blocked": [], "last_weekly": ""}
 
 
 def _run(sql, args=()):
@@ -58,7 +66,15 @@ def get_job(job_id):
 
 
 def set_status(job_id, status):
-    _run("update jobs set status = ? where id = ?", (status, job_id))
+    _run("update jobs set status = ?, updated_at = current_timestamp where id = ?", (status, job_id))
+
+
+def jobs_with_status(statuses, days):
+    """Jobs whose status became one of `statuses` in the last `days` days, newest first."""
+    marks = ", ".join("?" * len(statuses))
+    rows = _run(f"select data from jobs where status in ({marks}) and updated_at >= datetime('now', ?) "
+                "order by updated_at desc", (*statuses, f"-{days} days"))
+    return [json.loads(data) for (data,) in rows]
 
 
 def status_counts():

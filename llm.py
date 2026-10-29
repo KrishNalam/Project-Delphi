@@ -65,6 +65,14 @@ def _ask(kind, prompt, schema, model=MODEL, effort=None, cached=""):
     return r.parsed_output
 
 
+def spend_since(days, path=None):
+    """Dollars spent on Claude in the last `days` days."""
+    path = path or USAGE_CSV
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = list(csv.DictReader(open(path, newline=""))) if path.exists() else []
+    return sum(float(r["cost"]) for r in rows if r["time"] >= since)
+
+
 def usage_summary(path=USAGE_CSV):
     """Average and total spend per kind of call, for /cost."""
     rows = list(csv.DictReader(open(path, newline=""))) if path.exists() else []
