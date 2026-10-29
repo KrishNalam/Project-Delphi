@@ -55,7 +55,7 @@ at a digest hour, that digest goes out within an hour of waking up.
 | `/country canada\|usa\|both` | where to look |
 | `/count 5-10` | jobs per digest |
 | `/pause`, `/resume` | stop / restart the daily digest |
-| `/apply <link>` | apply to any posting, e.g. one you found yourself or want to redo |
+| `/apply <link> [<link> …]` | apply to any postings, e.g. ones you found yourself or want to redo (in turn) |
 | `/auto 8`, `/auto off` | apply to digest picks scoring 8/10+ without a tap (sites the bot can fill only) |
 | `/status` | what it's doing now, queue, settings, counts |
 | `/prep` | answer the common form questions (start date, relocation, pay, …) once, up front |

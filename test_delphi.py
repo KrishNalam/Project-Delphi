@@ -413,6 +413,27 @@ def test_due_slot():
         bot.DIGEST_HOURS = saved
 
 
+def test_apply_command_takes_several_links():
+    import asyncio
+
+    import bot
+    started = []
+
+    class App:
+        def create_task(coro):
+            started.append(coro.cr_frame.f_locals["job"]["url"])
+            coro.close()
+    saved = bot.job_from_url
+    bot.job_from_url = lambda url: {"url": url}
+    try:
+        ctx = type("Ctx", (), {"args": ["https://a.com/1", "and", "https://b.com/2", "https://a.com/1"],
+                               "application": App, "bot": None})
+        asyncio.run(bot.cmd_apply(None, ctx))
+    finally:
+        bot.job_from_url = saved
+    assert started == ["https://a.com/1", "https://b.com/2"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

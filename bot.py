@@ -657,11 +657,13 @@ def job_from_url(url):
 
 
 async def cmd_apply(update, ctx):
-    url = (ctx.args or [""])[0]
-    if not url.startswith("http"):
-        await update.message.reply_text("Send /apply <link to the posting>")
+    """/apply <link> [<link> ...]: each is applied to in turn (links on separate lines work too)."""
+    urls = [arg for arg in ctx.args or [] if arg.startswith("http")]
+    if not urls:
+        await update.message.reply_text("Send /apply <link to the posting>, or several links to do them in turn")
         return
-    ctx.application.create_task(run_apply(job_from_url(url), ctx.bot))
+    for url in dict.fromkeys(urls):  # each once, in the order sent
+        ctx.application.create_task(run_apply(job_from_url(url), ctx.bot))
 
 
 async def on_button(update, ctx):
