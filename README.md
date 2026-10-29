@@ -101,6 +101,11 @@ answers, and the profile + resume part of that prompt is cached.
 Have an ML resume and a general one? List the extra versions under `resumes:` in `profile.yaml`, each with
 keywords. A job whose title contains one of those words gets that version; everything else gets `resume_pdf`.
 
+## What you sent
+
+Every filled form is saved as a full-page screenshot in `applications/<date>-<company>-<title>.png` just before
+it's submitted (on Workday, the Review page with every answer), and cover letters in `cover_letters/`.
+
 ## Cover letters
 
 When a form requires a cover letter upload, Claude writes one for that job from the posting and your resume

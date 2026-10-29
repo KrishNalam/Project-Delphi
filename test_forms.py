@@ -133,6 +133,7 @@ def test_bot_flow():
 
     tmp = Path(tempfile.mkdtemp())
     store.APPLIED_CSV = tmp / "applied.csv"
+    bot.ROOT = tmp
     PROFILE.update(first_name="Ada", email="ada@x.com", city="Toronto", resume_pdf=str(tmp / "resume.pdf"))
     (tmp / "resume.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
     apply.ANSWERS = tmp / "answers.json"
@@ -184,6 +185,8 @@ def test_bot_flow():
     assert bot.running is None and bot.queued == 0 and not bot.apply_lock.locked()
     assert stale == [False, False] and cleared == [None, None]  # stale taps ignored, buttons removed after use
     assert letters == [b"%PDF", b"%PDF"]  # each application's cover letter was sent to read before Submit
+    assert sorted(f.name[11:] for f in (tmp / "applications").iterdir()) == [
+        "acme-data-intern.png", "acme-swe-intern.png"]  # a copy of each filled form, as sent
 
 
 if __name__ == "__main__":

@@ -257,6 +257,16 @@ def final_url(url):
         return url
 
 
+def keep_copy(job, png):
+    """applications/<date>-<company>-<title>.png: the filled form as it was about to be sent, so you can see what
+    you said on it when they call."""
+    folder = ROOT / "applications"
+    folder.mkdir(exist_ok=True)
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{job['company']} {job['title']}".lower()).strip("-")[:80]
+    with contextlib.suppress(OSError):
+        (folder / f"{datetime.now(TZ).date().isoformat()}-{slug}.png").write_bytes(png)
+
+
 async def find_form(url):
     """The URL whose form the bot can fill: short links followed, ?gh_jid= pages and pages embedding a form resolved."""
     url = apply.direct_url(await asyncio.to_thread(final_url, url))
@@ -309,6 +319,7 @@ async def _run_apply(job, bot):
         return answers
 
     async def confirm(png):
+        keep_copy(job, png)
         # A cover letter Claude wrote for this form: you get it to read (and keep), even when submitting unasked.
         if letter := job.pop("cover_letter", None):
             with contextlib.suppress(Exception):
