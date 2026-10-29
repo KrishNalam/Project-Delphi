@@ -347,6 +347,23 @@ async def resume_interrupted(app):
                                     Button("Skip", callback_data=f"skip:{job['id']}")]]))
 
 
+COMMANDS = [  # shown in Telegram's / menu
+    ("digest", "Search now"), ("status", "What I'm doing, settings, counts"),
+    ("apply", "Apply to a posting: /apply <link>"), ("auto", "Auto-apply to picks scoring N+: /auto 8, /auto off"),
+    ("week", "This week's applications and unfinished ones"), ("applied", "Latest applications"),
+    ("answers", "Saved form answers: /answers 3 <new text> to change"), ("forget", "Delete a saved answer: /forget 3"),
+    ("block", "Hide a company or title word: /block phd"), ("unblock", "Undo a block"),
+    ("country", "canada | usa | both"), ("count", "Jobs per digest, 5-10"), ("pause", "Stop the daily digest"),
+    ("resume", "Restart the daily digest"), ("cost", "Claude spend"),
+]
+
+
+async def on_start(app):
+    with contextlib.suppress(Exception):  # cosmetic; never block startup on it
+        await app.bot.set_my_commands(COMMANDS)
+    await resume_interrupted(app)
+
+
 def start_phone_view():
     """With VNC_PASSWORD set, the bot's browser draws on a virtual screen that your phone can open in Safari:
     Xvfb is the screen, x11vnc shares it, noVNC (websockify) serves it as a web page on port 6080."""
@@ -664,7 +681,7 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if env("VNC_PASSWORD"):
         start_phone_view()
-    app = Application.builder().token(env("TELEGRAM_BOT_TOKEN")).post_init(resume_interrupted).build()
+    app = Application.builder().token(env("TELEGRAM_BOT_TOKEN")).post_init(on_start).build()
     me = filters.Chat(CHAT_ID)  # only you can drive the bot
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest, me))
