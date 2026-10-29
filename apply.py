@@ -384,6 +384,10 @@ async def _fill(page, field, value):
         await hits.nth(best).click()
     else:
         await el.fill(value)
+        # Number-only boxes (salary, years) silently drop "$25/hour": keep just the number then.
+        digits = re.search(r"\d[\d,.]*", value)
+        if digits and not (await el.input_value()).strip():
+            await el.fill(digits[0].replace(",", "").rstrip("."))
 
 
 def _norm(label):
@@ -503,7 +507,8 @@ async def fill_form(page, job, ask, resume=None):
                     await _fill(page, f, "yes")
                 except Exception as e:
                     log.warning("tick %r: %s", f["label"], e)
-            elif f["filled"] and not f["required"] and PROMOTIONAL.search(f"{f['label']} {f['options'][0]}"):
+            elif (f["filled"] and not f["required"] and PROMOTIONAL.search(text := f"{f['label']} {f['options'][0]}")
+                  and not CONSENT.search(text)):  # "agree to the privacy policy and join our talent community" stays
                 with contextlib.suppress(Exception):  # a marketing opt-in the site ticked for you
                     await page.locator(f'[data-delphi-option="{f["index"]}"]').first.uncheck(force=True)
         await _fill_fields(page, job, ask, fields, todo, answers)

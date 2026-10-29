@@ -31,6 +31,7 @@ FORM = """<!doctype html><html><head><style>
     <label><input type="radio" name="p" value="she" required>She/her</label><label><input type="radio" name="p" value="he">He/him</label>
   </fieldset>
   <label><input type="checkbox" id="promo" checked>Send me job alerts and news</label>
+  <label><input type="checkbox" id="both" checked>I agree to the privacy policy and to join the talent community</label>
   <label for="resume">Resume</label><input type="file" id="resume">
   <label for="cover">Cover Letter*</label><input type="file" id="cover" required>
   <label for="why">Why Acme?</label><textarea id="why"></textarea>
@@ -94,7 +95,7 @@ def test_fill_and_submit():
             const $ = id => document.getElementById(id);
             return {auth: window.picked, city: $('city').value, grad: $('grad').value, first: $('first').value,
                     pronoun: document.querySelector('[name=p]:checked')?.value, resume: $('resume').files[0]?.name,
-                    cover: $('cover').files[0]?.name, promo: $('promo').checked};
+                    cover: $('cover').files[0]?.name, promo: $('promo').checked, both: $('both').checked};
         }"""))
         return True
 
@@ -117,7 +118,7 @@ def test_fill_and_submit():
     assert seen["Graduation date"]["placeholder"] == "MM/DD/YYYY"
     assert filled == {"auth": "Yes", "city": "Toronto, ON, Canada", "grad": "04/30/2028", "first": "Ada",
                       "pronoun": "she", "resume": "resume.pdf", "cover": "acme-intern.pdf",
-                      "promo": False}, filled  # the site's pre-ticked marketing opt-in got unticked
+                      "promo": False, "both": True}, filled  # marketing opt-in unticked, consent kept
     # The essay question and the cover letter both got the job ad's text.
     assert "rocket-powered roller skates" in seen["posting"] and "rocket-powered" in seen["letter_posting"]
     letter = tmp / "cover_letters" / "acme-intern.pdf"
@@ -187,8 +188,8 @@ def test_bot_flow():
     assert bot.running is None and bot.queued == 0 and not bot.apply_lock.locked()
     assert stale == [False, False] and cleared == [None, None]  # stale taps ignored, buttons removed after use
     assert letters == [b"%PDF", b"%PDF"]  # each application's cover letter was sent to read before Submit
-    assert sorted(f.name[11:] for f in (tmp / "applications").iterdir()) == [
-        "acme-data-intern.png", "acme-swe-intern.png"]  # a copy of each filled form, as sent
+    assert sorted(f.name[11:-11] for f in (tmp / "applications").iterdir()) == [
+        "acme-data-intern", "acme-swe-intern"]  # a copy of each filled form, as sent
 
 
 if __name__ == "__main__":

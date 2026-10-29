@@ -32,7 +32,7 @@ from store import (_key, already_applied, applied_rows, canonical, get_job, get_
 log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
 TZ = ZoneInfo(env("DELPHI_TZ", "America/Toronto"))
-DIGEST_HOURS = sorted(int(h) for h in env("DIGEST_HOUR", "8").split(",") if h.strip())  # e.g. "8" or "8,17"
+DIGEST_HOURS = sorted({int(h) for h in re.findall(r"\d+", env("DIGEST_HOUR", "8")) if int(h) < 24}) or [8]  # "8,17"
 pending = None  # (kind, Future, tag) the application is waiting on: "text" reply, "confirm" or "stuck" tap
 apply_lock = asyncio.Lock()  # one application at a time so replies can't get crossed
 digest_lock = asyncio.Lock()  # /digest tapped during the daily one would show the same jobs twice
@@ -260,11 +260,11 @@ def final_url(url):
 def keep_copy(job, png):
     """applications/<date>-<company>-<title>.png: the filled form as it was about to be sent, so you can see what
     you said on it when they call."""
-    folder = ROOT / "applications"
-    folder.mkdir(exist_ok=True)
     slug = re.sub(r"[^a-z0-9]+", "-", f"{job['company']} {job['title']}".lower()).strip("-")[:80]
-    with contextlib.suppress(OSError):
-        (folder / f"{datetime.now(TZ).date().isoformat()}-{slug}.png").write_bytes(png)
+    with contextlib.suppress(OSError):  # a copy for you; never worth failing the application over
+        (ROOT / "applications").mkdir(exist_ok=True)
+        # The id keeps two same-titled postings (one per city) from overwriting each other.
+        (ROOT / "applications" / f"{datetime.now(TZ).date().isoformat()}-{slug}-{job['id'][:6]}.png").write_bytes(png)
 
 
 async def find_form(url):
@@ -319,16 +319,16 @@ async def _run_apply(job, bot):
         return answers
 
     async def confirm(png):
-        keep_copy(job, png)
         # A cover letter Claude wrote for this form: you get it to read (and keep), even when submitting unasked.
         if letter := job.pop("cover_letter", None):
             with contextlib.suppress(Exception):
                 await bot.send_document(CHAT_ID, letter.read_bytes(), filename=letter.name,
                                         caption=f"Cover letter for {job['company']}")
-        if env("CONFIRM_BEFORE_SUBMIT", "1") != "1":
-            return True
-        return await _buttons(bot, "confirm", png, "application.png", "Submit this?" + watch_hint(),
-                              ("Submit", "Cancel"))
+        go = env("CONFIRM_BEFORE_SUBMIT", "1") != "1" or await _buttons(
+            bot, "confirm", png, "application.png", "Submit this?" + watch_hint(), ("Submit", "Cancel"))
+        if go:
+            keep_copy(job, png)
+        return go
 
     done_button = Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}")]])
 
@@ -351,12 +351,16 @@ async def _run_apply(job, bot):
     error = ""
     # Watchdog: a frozen page can hang the browser forever, and the queue behind it with it. Generous: room for
     # every wait on you (questions, code, Submit, stuck) plus an hour of form filling.
-    limit = (4 * float(env("ANSWER_TIMEOUT_HOURS", "6")) + 1) * 3600
+    limit = (8 * float(env("ANSWER_TIMEOUT_HOURS", "6")) + 1) * 3600
     try:
         site = workday if workday.handles(job["url"]) else apply
         status = await asyncio.wait_for(site.apply(job, ask, confirm, stuck), timeout=limit)
     except asyncio.TimeoutError:
         log.error("applying to %s took over %.0f hours", job["url"], limit / 3600)
+        if job_status(job["id"]) == "submitting":  # stopped mid-Submit: it may have gone through, don't invite a retry
+            await bot.send_message(CHAT_ID, f"I stopped {job['title']} @ {job['company']} during Submit, so it may "
+                                            "have gone through: check your email.", reply_markup=done_button)
+            return
         status, error = "failed", f"it was still running after {limit / 3600:.0f} hours, so I stopped it"
     except Exception as e:  # before the form opened: missing resume, page didn't load, ...
         log.exception("applying to %s", job["url"])
@@ -588,6 +592,9 @@ async def prep(bot, questions):
     if apply_lock.locked():
         await bot.send_message(CHAT_ID, "I'll ask once the current application is done.")
     async with apply_lock:  # so these answers can't be taken as a form's (one thing waits on replies at a time)
+        # Again now: a /prep sent twice, or one answered while this waited, mustn't ask the same things over.
+        if not (questions := [q for q in questions if q not in apply.load_answers()]):
+            return
         numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
         await bot.send_message(CHAT_ID, "Common application questions: answer them once and I'll reuse them on every "
                                         "form. One numbered line each:\n" + numbered)
@@ -645,9 +652,13 @@ async def cmd_applied(update, ctx):
     await update.message.reply_text(f"{len(rows)} applications. Latest:\n" + "\n".join(lines) if rows else "None yet.")
 
 
+AGGREGATORS = re.compile(r"linkedin|indeed|glassdoor|simplify|ziprecruiter|monster", re.I)
+
+
 def describe(url, html=""):
-    """(company, title) of a posting, from its page's <title> and og: tags in each site's format, else guessed from
-    the link. A guess like ("Jobs", "jobs") for every careers page would make each later one look already applied."""
+    """(company, title) of a posting: from its page in each job site's own title format ("Job Application for T at
+    C", "T @ C", ...), else og: tags, else the link. Never a page's generic <title> like "Careers | Acme": two
+    postings named alike would look like one already applied."""
     def tag(pattern):
         match = re.search(pattern, html, re.I | re.S)
         return unescape(unescape(" ".join(match[1].split()))) if match else ""
@@ -657,14 +668,14 @@ def describe(url, html=""):
                 or tag(rf'<meta[^>]+content="([^"]*)"[^>]*property="{prop}"'))
 
     page, host = tag(r"<title[^>]*>(.*?)</title>"), urlparse(url).netloc
-    if match := re.match(r"job application for (.+) at (.+)$", page, re.I):  # Greenhouse
+    if "greenhouse.io" in host and (match := re.match(r"job application for (.+) at (.+)$", page, re.I)):
         return match[2], match[1]
-    if " @ " in page:  # Ashby: "Title @ Company"
+    if "ashbyhq.com" in host and " @ " in page:  # "Title @ Company"
         title, company = page.rsplit(" @ ", 1)
         return company, title
-    if " - " in page and "lever.co" in host:  # "Company - Title"
+    if "lever.co" in host and " - " in page:  # "Company - Title"
         return tuple(page.split(" - ", 1))
-    if " - " in page and "workable.com" in host:  # "Title - Company"
+    if "workable.com" in host and " - " in page:  # "Title - Company"
         title, company = page.rsplit(" - ", 1)
         return company, title
     # e.g. altera.wd1.myworkdayjobs.com/.../Software-Intern_R03373 -> Altera, "Software Intern"
@@ -673,8 +684,12 @@ def describe(url, html=""):
     name = host.removeprefix("www.").split(".")[0]
     if name in ("jobs", "boards", "job-boards", "apply", "careers"):
         name = urlparse(url).path.strip("/").split("/")[0] or name
-    title = meta("og:title") or page or re.sub(r"_R?\d+$", "", slug).replace("-", " ").strip() or url
-    return meta("og:site_name") or name.title(), title
+    site = meta("og:site_name")
+    company = site if site and not AGGREGATORS.search(site) else name.title()
+    title = re.sub(r"_R?\d+$", "", slug).replace("-", " ").strip()
+    if len(title) < 4 or title.lower() in ("jobs", "careers", "job", "apply", "application", "opening"):
+        title = url  # "jobs" for every /jobs?id= link would make them all one posting
+    return company, meta("og:title") or title
 
 
 def job_from_url(url):
@@ -682,13 +697,14 @@ def job_from_url(url):
     stub = sources._job("telegram", "", "", [], url)
     if job := get_job(stub["id"]):
         return job
+    page = apply.direct_url(url)  # a ?gh_jid= careers page is named by its Greenhouse form
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        request = urllib.request.Request(page, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(request, timeout=20) as r:
-            html = r.read(500_000).decode("utf-8", "replace")
+            page, html = r.url, r.read(500_000).decode("utf-8", "replace")
     except Exception:  # the link alone still names it, roughly
         html = ""
-    stub["company"], stub["title"] = (part.strip() for part in describe(url, html))
+    stub["company"], stub["title"] = (part.strip() for part in describe(page, html))
     save_job(stub)
     return stub
 
@@ -699,8 +715,12 @@ async def cmd_apply(update, ctx):
     if not urls:
         await update.message.reply_text("Send /apply <link to the posting>, or several links to do them in turn")
         return
-    for url in dict.fromkeys(urls):  # each once, in the order sent
-        ctx.application.create_task(run_apply(await asyncio.to_thread(job_from_url, url), ctx.bot))
+    for url in dict.fromkeys(urls):  # each once (naming each means fetching its page: done in the task)
+        ctx.application.create_task(apply_link(url, ctx.bot))
+
+
+async def apply_link(url, bot):
+    await run_apply(await asyncio.to_thread(job_from_url, url), bot)
 
 
 async def on_button(update, ctx):

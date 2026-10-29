@@ -420,17 +420,12 @@ def test_apply_command_takes_several_links():
     started = []
 
     class App:
-        def create_task(coro):
-            started.append(coro.cr_frame.f_locals["job"]["url"])
+        def create_task(coro):  # each link is named and applied to in its own task
+            started.append(coro.cr_frame.f_locals["url"])
             coro.close()
-    saved = bot.job_from_url
-    bot.job_from_url = lambda url: {"url": url}
-    try:
-        ctx = type("Ctx", (), {"args": ["https://a.com/1", "and", "https://b.com/2", "https://a.com/1"],
-                               "application": App, "bot": None})
-        asyncio.run(bot.cmd_apply(None, ctx))
-    finally:
-        bot.job_from_url = saved
+    ctx = type("Ctx", (), {"args": ["https://a.com/1", "and", "https://b.com/2", "https://a.com/1"],
+                           "application": App, "bot": None})
+    asyncio.run(bot.cmd_apply(None, ctx))
     assert started == ["https://a.com/1", "https://b.com/2"]
 
 
@@ -448,6 +443,12 @@ def test_describe():
     assert describe("https://careers.withwaymo.com/jobs?gh_jid=1",
                     page("x", '<meta property="og:title" content="AI Intern &amp;amp; Co">',
                          '<meta content="Waymo" property="og:site_name">')) == ("Waymo", "AI Intern & Co")
+    # A careers page's generic <title> isn't a job title: two postings would look like one already applied.
+    assert describe("https://acme.com/careers/jobs/123-ml-intern", page("Careers | Acme")) == ("Acme", "123 ml intern")
+    assert describe("https://acme.com/careers/x", page("Contact us @ Acme for roles"))[0] == "Acme"  # not Ashby
+    assert describe("https://careers.acme.com/jobs?gh_jid=1") != describe("https://careers.acme.com/jobs?gh_jid=2")
+    assert describe("https://jobs.example.org/acme/2", page(
+        "x", '<meta property="og:site_name" content="LinkedIn">'))[0] == "Acme"
     # Two careers pages with no usable HTML still differ, so one doesn't look like the other already applied.
     assert describe("https://soti.wd3.myworkdayjobs.com/x/job/Y/Software-Developer-Intern_R10620") == \
         ("Soti", "Software Developer Intern")
