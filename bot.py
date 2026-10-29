@@ -271,6 +271,7 @@ async def _run_apply(job, bot):
     if row := already_applied(job):  # e.g. Apply tapped twice while the first run was going
         await bot.send_message(CHAT_ID, f"You already applied to {job['company']} on {row['date']}.")
         return
+    set_status(job["id"], "applying")  # still this at startup = the bot stopped mid-application (resume_interrupted)
     await bot.send_message(CHAT_ID, f"Applying to {job['title']} @ {job['company']}…")
 
     async def ask(questions):
@@ -331,6 +332,19 @@ async def _run_apply(job, bot):
         await bot.send_message(CHAT_ID, f"{reason}.\nFinish it here: {job['url']}\n"
                                         "Or fix the problem and tap Apply again.", reply_markup=done_button)
     # "handoff": stuck() already sent the screenshot and link.
+
+
+async def resume_interrupted(app):
+    """At startup: applications the bot was in the middle of when it stopped (crash, restart, reboot) get an
+    Apply button again, since nothing was submitted and nothing else would bring them back."""
+    for job in jobs_with_status(("applying",), 30):
+        set_status(job["id"], "shown")
+        if already_applied(job):
+            continue
+        await app.bot.send_message(
+            CHAT_ID, f"I restarted while applying to {job['title']} @ {job['company']}, so it wasn't sent.",
+            reply_markup=Keyboard([[Button("Apply again", callback_data=f"apply:{job['id']}"),
+                                    Button("Skip", callback_data=f"skip:{job['id']}")]]))
 
 
 def start_phone_view():
@@ -650,7 +664,7 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if env("VNC_PASSWORD"):
         start_phone_view()
-    app = Application.builder().token(env("TELEGRAM_BOT_TOKEN")).build()
+    app = Application.builder().token(env("TELEGRAM_BOT_TOKEN")).post_init(resume_interrupted).build()
     me = filters.Chat(CHAT_ID)  # only you can drive the bot
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest, me))

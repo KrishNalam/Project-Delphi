@@ -302,6 +302,34 @@ def test_week():
     assert len(sent) == 2
 
 
+def test_resume_interrupted():
+    import asyncio
+
+    import bot
+    import store
+    saved = store.DB, store.APPLIED_CSV
+    store.DB = store.open_db(":memory:")
+    store.APPLIED_CSV = Path(tempfile.mkdtemp()) / "applied.csv"
+    sent = []
+
+    class App:
+        class bot:  # noqa: N801
+            async def send_message(chat, text, reply_markup=None, **kw):
+                sent.append((text, [b.callback_data for b in reply_markup.inline_keyboard[0]]))
+    try:
+        cut, done = (_job("t", "Acme", t, [], f"https://acme.com/{t}") for t in ("Cut off", "Got there"))
+        for j in (cut, done):
+            store.save_job(j)
+            store.set_status(j["id"], "applying")
+        log_application(done, "submitted")  # crashed after submitting: nothing to redo
+        asyncio.run(bot.resume_interrupted(App))
+        assert store.jobs_with_status(("applying",), 30) == []
+    finally:
+        store.DB, store.APPLIED_CSV = saved
+    assert sent == [("I restarted while applying to Cut off @ Acme, so it wasn't sent.",
+                     [f"apply:{cut['id']}", f"skip:{cut['id']}"])], sent
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
