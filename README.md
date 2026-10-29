@@ -2,6 +2,7 @@
 
 Every morning 5–10 internships you're qualified for land on your phone. Tap **Apply** and a browser
 fills out the application. Anything it can't answer, it asks you in one message and remembers for next time.
+Or turn on `/auto 8` and it applies to every strong match by itself.
 
 ```
 sources ─► filter ─► rank (Claude) ─► Telegram digest ─► [Apply] ─► Playwright fills the form
@@ -15,7 +16,7 @@ sources ─► filter ─► rank (Claude) ─► Telegram digest ─► [Apply]
 | Sources: SimplifyJobs + vanshb03 Summer 2027 lists, LinkedIn + Indeed (python-jobspy), Quercus pages and announcements | `sources.py` |
 | Rules: internship/co-op titles, Canada/USA toggle, drops US postings that won't sponsor | `filters.py` |
 | Claude: ranking, Quercus extraction, mapping form fields to your profile | `llm.py` |
-| Browser autofill for Greenhouse, Lever, Ashby | `apply.py` |
+| Browser autofill for Greenhouse, Lever, Ashby, Workable (and company pages that embed them) | `apply.py` |
 | Workday: account, sign-in, then the wizard page by page | `workday.py` |
 | Telegram bot and daily schedule | `bot.py` |
 | `delphi.db` (seen jobs, settings), `applied.csv` (applications) | `store.py` |
@@ -29,18 +30,19 @@ cp .env.example .env && cp profile.example.yaml profile.yaml   # fill both in
 ```
 
 1. Message [@BotFather](https://t.me/BotFather), `/newbot`, put the token in `.env`.
-2. `.venv/bin/python bot.py`, send `/start` to your bot, put the chat id it replies with in `.env`, restart.
-3. Send `/digest` to try it.
+2. `.venv/bin/python bot.py`, send `/start` to your bot, put the chat id it replies with in `.env`, stop it (Ctrl-C).
+3. `.venv/bin/python bot.py --check` lists anything still missing (keys, profile fields, resume, browser).
+4. Send `/digest` to try it.
 
 ## Keep it running
 
 ```
-mkdir -p ~/.config/systemd/user
-sed "s|%h/Projects/Delphi|$PWD|" delphi.service > ~/.config/systemd/user/delphi.service   # run from the repo
-systemctl --user enable --now delphi
-loginctl enable-linger $USER      # keeps running after you log out
+./deploy.sh                       # checks the setup, then installs and starts the service from this folder
 journalctl --user -u delphi -f    # logs
 ```
+
+It starts on boot, restarts within a minute if it crashes, and keeps running after you log out. Re-run
+`./deploy.sh` after pulling changes.
 
 Nothing needs to stay open, but the machine has to be on. If it was asleep at `DIGEST_HOUR`, the
 digest goes out within an hour of waking up.
@@ -54,6 +56,8 @@ digest goes out within an hour of waking up.
 | `/count 5-10` | jobs per digest |
 | `/pause`, `/resume` | stop / restart the daily digest |
 | `/apply <link>` | apply to any posting, e.g. one you found yourself or want to redo |
+| `/auto 8`, `/auto off` | apply to digest picks scoring 8/10+ without a tap (sites the bot can fill only) |
+| `/status` | what it's doing now, queue, settings, counts |
 | `/applied` | latest rows of `applied.csv` |
 | `/cost` | Claude spend: last 30 days, average per digest and per application |
 
@@ -64,6 +68,14 @@ browser then runs on a virtual screen, and the "Submit this?" and "stuck" messag
 it in your phone's browser, where you can scroll, fix a field or finish the form. The link works on your home
 Wi-Fi. For anywhere else, install [Tailscale](https://tailscale.com) on the computer and phone and set
 `PHONE_VIEW_HOST` to the computer's Tailscale name.
+
+## Hands-off mode
+
+`/auto 8` makes each digest apply to its picks scoring 8/10 or more by itself, one at a time. With
+`CONFIRM_BEFORE_SUBMIT=1` you still get each filled form to approve; set it to `0` in `.env` to have them
+submitted without asking. Questions it can't answer from your profile or `answers.json` still come to you
+(after 6 hours unanswered it gives up on that one and moves on), so answer a few early on and it needs you less
+and less. If the search fails (network, API), it retries every hour that day.
 
 ## applied.csv
 
@@ -86,18 +98,23 @@ forms. Edit it freely.
 
 ## Limits
 
-- Greenhouse, Lever, Ashby and Workday are auto-filled. iCIMS, Oracle and SuccessFactors aren't: you
-  get the link and an **I applied** button.
+- Greenhouse, Lever, Ashby, Workable and Workday are auto-filled, including company career pages that embed a
+  Greenhouse form (`?gh_jid=`). iCIMS, Oracle, SmartRecruiters and SuccessFactors aren't: you get the link and an
+  **I applied** button. Each digest job says which it is.
+- Greenhouse sometimes emails a code after Submit: the bot asks you for it.
 - Workday: the bot makes an account on each company's Workday site with your email and
   `WORKDAY_PASSWORD`. If a company emails a verification link, it asks you to click it. Work history
   and education come from Workday's own resume parsing; if a page still rejects, the browser is left
   open for you to finish.
 - If submit can't be confirmed (usually a CAPTCHA) you get the link to finish by hand.
-- LinkedIn is read as a guest only. The bot never logs in, and applies on the company's own site.
+- LinkedIn is read as a guest only. The bot never logs in, and applies on the company's own site. LinkedIn hides
+  that site from guests, so LinkedIn-only postings are "fill it yourself"; when the same job is also on a
+  GitHub list or Indeed, that direct link is used instead.
 
 ## Dev
 
 ```
 .venv/bin/python test_delphi.py          # self-check for filters, country parsing, applied.csv
+.venv/bin/python test_forms.py           # headless browser: fills and submits a tricky local form, bot flow
 .venv/bin/python apply.py <posting url>  # print the form fields the bot sees
 ```
