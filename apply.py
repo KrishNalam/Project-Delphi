@@ -516,6 +516,8 @@ async def apply(job, ask, confirm, stuck):
             if await _verify_email(page, ask) and SUCCESS.search(await page.inner_text("body")):
                 return "submitted"
             reason = "I clicked submit but couldn't confirm it went through (often a CAPTCHA or a rejected field)"
+        except TimeoutError:  # a question or the Submit check went unanswered for hours (asyncio's, not Playwright's)
+            reason = "No answer from you for 6 hours, so I stopped here"
         except Exception as e:
             log.exception("applying to %s", job["url"])
             reason = f"Something broke while filling the form: {str(e)[:300]}"

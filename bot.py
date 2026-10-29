@@ -22,8 +22,8 @@ import sources
 import workday
 from config import PROFILE, ROOT, env
 from filters import keep, relevance, words
-from store import (_key, already_applied, applied_rows, canonical, get_job, get_setting, is_new, log_application, save_job,
-                   set_setting, set_status, status_counts, update_job)
+from store import (_key, already_applied, applied_rows, canonical, get_job, get_setting, is_new, log_application,
+                   save_job, set_setting, set_status, status_counts, update_job)
 
 log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
@@ -168,7 +168,10 @@ async def find_form(url):
     """The URL whose form the bot can fill: short links followed, ?gh_jid= pages and pages embedding a form resolved."""
     url = apply.direct_url(await asyncio.to_thread(final_url, url))
     if not fillable(url):
-        url = await apply.embedded_form(url) or url
+        try:
+            url = await apply.embedded_form(url) or url
+        except Exception:  # the link itself is still worth handing you
+            log.exception("looking for a form on %s", url)
     return url
 
 
