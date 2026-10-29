@@ -80,6 +80,10 @@ def test_parse_answers():
     assert parse_answers("April 2028", 2) == ["April 2028", "April 2028"]
     assert parse_answers("4th year undergrad, 4 months, no", 3) == ["4th year undergrad", "4 months", "no"]
     assert parse_answers("No, never", 3) == ["No, never"] * 3
+    # One question takes the whole reply: a multi-paragraph answer used to be rejected forever.
+    assert parse_answers("I built a compiler.\n\nIt was fun.", 1) == ["I built a compiler.\n\nIt was fun."]
+    assert parse_answers("1. A7Z9", 1) == ["A7Z9"]
+    assert parse_answers("  ", 1) is None
 
 
 def test_known_values():
@@ -91,6 +95,8 @@ def test_known_values():
               {"index": 4, "type": "radio", "label": "Do you need sponsorship?", "options": ["Yes", "No"]}]
     got = known_values(fields, {"Pronouns": "she/her", "Do you need sponsorship?": "Maybe"})
     assert got == {0: "Ada Lovelace", 1: "ada@x.com", 3: "she/her"}, got  # 4: saved answer isn't an option
+    # An answer saved under an empty label must not fill every unlabelled field.
+    assert known_values([{"index": 0, "type": "text", "label": "", "options": []}], {"": "oops"}) == {}
 
 
 def test_cost_tracking():
@@ -117,6 +123,52 @@ def test_box_choice():
     assert _box_choice(box("I currently work here", "I currently work here")) == "leave"
     assert _box_choice(box("Send me job alerts and promotions", "Yes")) == "leave"
     assert _box_choice(box("Are you open to relocation?", "Yes")) is None
+
+
+
+def test_rank_dedupes():
+    jobs = [job(title=f"Intern {i}") for i in range(3)]
+    picks = llm.Ranking(picks=[llm.Pick(index=1, score=9, why="a"), llm.Pick(index=1, score=9, why="a"),
+                               llm.Pick(index=7, score=5, why="out of range"), llm.Pick(index=0, score=6, why="b")])
+    ask = llm._ask
+    llm._ask = lambda *a, **k: picks
+    try:
+        assert [j["title"] for j in llm.rank(jobs, 5)] == ["Intern 1", "Intern 0"]
+    finally:
+        llm._ask = ask
+
+
+def test_form_urls():
+    from apply import FORM_LINK, direct_url
+    from bot import fillable
+    assert direct_url("https://careers.withwaymo.com/jobs?gh_jid=8306841") == \
+        "https://boards.greenhouse.io/embed/job_app?token=8306841"
+    assert direct_url("https://jobs.lever.co/x/1") == "https://jobs.lever.co/x/1"
+    for url in ["https://job-boards.greenhouse.io/acme/jobs/123", "https://boards.greenhouse.io/embed/job_app?token=5",
+                "https://jobs.lever.co/acme/71e99c38-aa29-4414-956d-cc526644b9b7",
+                "https://jobs.ashbyhq.com/acme/b2726ac7-dd0d-42f3-93a5-139e18c90779",
+                "https://apply.workable.com/rokt/j/616F2D0286", "https://x.wd1.myworkdayjobs.com/External/job/T/Intern_R1"]:
+        assert FORM_LINK.search(url), url
+    for url in ["https://boards.greenhouse.io/acme", "https://jobs.lever.co/acme", "https://acme.com/careers"]:
+        assert not FORM_LINK.search(url), url  # whole job boards, not one posting
+    assert fillable("https://apply.workable.com/rokt/j/616F2D0286/apply")
+    assert fillable("https://x.wd5.myworkdayjobs.com/en-US/External/job/Intern_R1")
+    assert not fillable("https://jobs.smartrecruiters.com/Bosch/1")
+
+
+def test_answer_once():
+    import asyncio
+
+    import bot
+
+    async def go():
+        waiting = asyncio.create_task(bot._wait("text"))
+        await asyncio.sleep(0)
+        assert bot._answer("text", "first") and not bot._answer("text", "second")  # used to raise InvalidStateError
+        assert not bot._answer("confirm", True)
+        return await waiting
+    assert asyncio.run(go()) == "first"
+    assert not bot._answer("text", "nobody's waiting")
 
 
 if __name__ == "__main__":

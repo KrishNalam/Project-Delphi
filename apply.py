@@ -96,7 +96,11 @@ EXTRACT_JS = r"""
     const own = el.labels?.[0]?.innerText || el.getAttribute('aria-label') || byId(el.getAttribute('aria-labelledby'));
     // Workday dropdown buttons name themselves "Select One Required": the question is in the wrapper instead.
     const grouped = members.length > 1 || boxed || el.tagName === 'SELECT' || type === 'file' || type === 'listbox';
-    const skip = type === 'listbox' ? [el.innerText] : options;
+    // react-select (Greenhouse, Ashby) empties its <input> after a pick and shows the choice beside it, where it
+    // mustn't be mistaken for the question.
+    const picked = type === 'combobox' &&
+      el.closest('[class*=control]')?.querySelector('[class*=single-value], [class*=singleValue], [class*=multi-value]');
+    const skip = type === 'listbox' ? [el.innerText] : picked ? [picked.innerText] : options;
     // name falls back to the id: Greenhouse's two uploads are both labelled "Attach" but have ids resume / cover_letter.
     const f = {index: out.length, type, name: el.name || el.id || '', options, workday: !!auto,
                label: clean((grouped ? '' : own) || near(el, members.length, skip) || own || el.placeholder),
@@ -104,9 +108,6 @@ EXTRACT_JS = r"""
                required: el.required || el.getAttribute('aria-required') === 'true' || marked(el, members.length)};
     // Already has a value (Workday prefills from the resume and from saved drafts): leave it alone.
     const chips = el.parentElement.querySelector('[data-automation-id=promptAriaInstruction]');
-    // react-select (Greenhouse, Ashby) empties its <input> after a pick and shows the choice beside it.
-    const picked = type === 'combobox' &&
-      el.closest('[class*=control]')?.querySelector('[class*=single-value], [class*=singleValue], [class*=multi-value]');
     f.filled = type === 'listbox' ? !/^select one/i.test(clean(el.innerText))
       : chips ? !/^0 /.test(chips.innerText)
       : picked ? true
@@ -292,6 +293,9 @@ async def _fill(page, field, value):
         try:
             await (exact if await exact.count() else option).first.click(timeout=4000)
         except Exception:
+            # Enter with no list open would submit the whole form, so only when there's a list (or on Workday).
+            if not (field.get("workday") or await options.count()):
+                raise
             await el.press("Enter")
             with contextlib.suppress(Exception):
                 await option.first.click(timeout=3000)
@@ -367,7 +371,7 @@ def known_values(fields, answers):
             if value:
                 values[f["index"]] = str(value)
                 continue
-        answer = saved.get(label)
+        answer = saved.get(label) if label else None  # unlabelled fields share no question
         if answer and (not f["options"] or answer.lower() in (o.lower() for o in f["options"])):
             values[f["index"]] = answer
     return values
@@ -387,7 +391,8 @@ def _box_choice(field):
 
 def _question(field):
     options = f" [{' / '.join(field['options'])}]" if field["options"] else ""
-    return field["label"] + options
+    label = field["label"] or field.get("placeholder") or field.get("name") or f"(unlabelled {field['type']} field)"
+    return label + options
 
 
 async def _fill_fields(page, job, ask, fields, todo, answers):
@@ -405,7 +410,9 @@ async def _fill_fields(page, job, ask, fields, todo, answers):
                     and i not in values and i not in unknown]
     if unknown:
         for i, reply in zip(unknown, await ask([_question(fields[i]) for i in unknown]), strict=True):
-            values[i] = answers[fields[i]["label"]] = reply
+            values[i] = reply
+            if fields[i]["label"]:  # saved for next time under its question; an unlabelled one has none
+                answers[fields[i]["label"]] = reply
         ANSWERS.write_text(json.dumps(answers, indent=1))
     for i, value in values.items():
         try:
@@ -421,11 +428,18 @@ async def fill_form(page, job, ask, resume=None):
     """
     answers = json.loads(ANSWERS.read_text()) if ANSWERS.exists() else {}
     fields = await read_fields(page)
+    if not fields:  # single-page apps (Ashby) can draw the form a few seconds after the page says it has loaded
+        with contextlib.suppress(Exception):
+            await page.locator("input:visible, select:visible, textarea:visible").first.wait_for(timeout=20000)
+            await page.wait_for_timeout(1000)  # the rest of the form renders with it
+        fields = await read_fields(page)
     first, seen = fields, set()
-    for _ in range(3):  # an answer can reveal a follow-up question (e.g. a referrer's name), so look again
-        # Workday's prefilled values come from your resume and saved drafts, so they stay. Elsewhere a prefill is the
-        # site's guess (Workable puts the server's geo-IP city in Address), so it gets overwritten.
-        todo = [f for f in fields if (f["label"], f["type"]) not in seen and not (f["filled"] and f["workday"])]
+    for attempt in range(3):  # an answer can reveal a follow-up question (e.g. a referrer's name), so look again
+        # Workday's prefilled values come from your resume and saved drafts, so they stay. Elsewhere a value there on
+        # arrival is the site's guess (Workable puts the server's geo-IP city in Address), so it gets overwritten;
+        # on later looks, filled means we filled it.
+        todo = [f for f in fields if (f["label"], f["type"]) not in seen
+                and not (f["filled"] and (f["workday"] or attempt))]
         if not todo:
             break
         seen |= {(f["label"], f["type"]) for f in todo}
@@ -448,6 +462,38 @@ async def fill_form(page, job, ask, resume=None):
     return first
 
 
+SUBMIT = re.compile(r"^\s*submit( my| your)?( application)?\s*$", re.I)
+# Greenhouse emails a code after Submit on some boards ("Enter the 8-character code sent to ...").
+CODE = re.compile(r"(security|verification|confirmation) code|code (was )?sent|enter the code", re.I)
+
+
+async def _submit(page):
+    """Click the visible Submit button (by its name first: a page can have other submit buttons, e.g. search)."""
+    named = page.get_by_role("button", name=SUBMIT).filter(visible=True)
+    button = named if await named.count() else page.locator(
+        "button[type=submit], input[type=submit], button:has-text('Submit')").filter(visible=True)
+    await button.first.click()
+    await page.wait_for_timeout(6000)
+
+
+async def _verify_email(page, ask):
+    """If the site emailed a code to confirm the application, ask for it, type it in and submit again.
+    The code goes in one box, or one character per box. False if no code was asked for."""
+    boxes = [f for f in await read_fields(page)
+             if f["type"] in ("text", "tel", "number") and CODE.search(f"{f['label']} {f['placeholder']}")]
+    if not boxes:
+        return False
+    host = re.sub(r"^www\.", "", re.sub(r"^https?://([^/]+).*", r"\1", page.url))
+    (code,) = await ask([f"{host} emailed a verification code to {PROFILE.get('email', 'your email')}. "
+                         "Reply with the code."])
+    code = re.sub(r"\s+", "", code)
+    parts = [code] if len(boxes) == 1 else list(code)
+    for box, part in zip(boxes, parts):
+        await page.locator(f'[data-delphi="{box["index"]}"]').fill(part)
+    await _submit(page)
+    return True
+
+
 async def apply(job, ask, confirm, stuck):
     """Fill and submit. Returns 'submitted', 'cancelled', 'unsupported', 'manual' (you finished it) or 'handoff'.
 
@@ -464,9 +510,10 @@ async def apply(job, ask, confirm, stuck):
                 raise RuntimeError("found no form fields on the page")
             if not await confirm(await page.screenshot(full_page=True)):
                 return "cancelled"
-            await page.locator("button[type=submit], input[type=submit], button:has-text('Submit')").first.click()
-            await page.wait_for_timeout(6000)
+            await _submit(page)
             if SUCCESS.search(await page.inner_text("body")):
+                return "submitted"
+            if await _verify_email(page, ask) and SUCCESS.search(await page.inner_text("body")):
                 return "submitted"
             reason = "I clicked submit but couldn't confirm it went through (often a CAPTCHA or a rejected field)"
         except Exception as e:

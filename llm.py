@@ -104,7 +104,9 @@ def rank(jobs, n):
         f"Below are internship postings. Pick the {n} this candidate is most qualified for and most likely to get "
         f"an interview at. Score each 0-10 and give a one-line reason (max 15 words). Best first.\n\n{listing}",
         Ranking, model=FAST_MODEL, effort="low").picks
-    return [dict(jobs[p.index], score=p.score, why=p.why) for p in picks if 0 <= p.index < len(jobs)][:n]
+    seen = set()  # Claude sometimes lists a job twice
+    picks = [p for p in picks if 0 <= p.index < len(jobs) and not (p.index in seen or seen.add(p.index))]
+    return [dict(jobs[p.index], score=p.score, why=p.why) for p in picks][:n]
 
 
 class Posting(BaseModel):

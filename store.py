@@ -3,48 +3,66 @@ import csv
 import json
 import re
 import sqlite3
+import threading
 from datetime import date
 
 from config import ROOT
 
 DB = sqlite3.connect(ROOT / "delphi.db", check_same_thread=False)
+LOCK = threading.RLock()  # the digest runs in a worker thread while Telegram handlers use the same connection
 DB.executescript("""
 create table if not exists jobs (id text primary key, data text, status text default 'new',
                                  seen_at text default current_timestamp);
 create table if not exists settings (key text primary key, value text);
 """)
-DEFAULTS = {"countries": ["canada", "usa"], "count": 8, "paused": False, "last_digest": "", "workday_accounts": []}
+# auto_min: digest picks scoring at least this get applied to without a tap (None = off).
+DEFAULTS = {"countries": ["canada", "usa"], "count": 8, "paused": False, "last_digest": "", "workday_accounts": [],
+            "auto_min": None}
+
+
+def _run(sql, args=()):
+    with LOCK:
+        rows = DB.execute(sql, args).fetchall()
+        DB.commit()
+        return rows
 
 
 def get_setting(key):
-    row = DB.execute("select value from settings where key = ?", (key,)).fetchone()
-    return json.loads(row[0]) if row else DEFAULTS[key]
+    rows = _run("select value from settings where key = ?", (key,))
+    return json.loads(rows[0][0]) if rows else DEFAULTS[key]
 
 
 def set_setting(key, value):
-    DB.execute("insert or replace into settings values (?, ?)", (key, json.dumps(value)))
-    DB.commit()
+    _run("insert or replace into settings values (?, ?)", (key, json.dumps(value)))
 
 
 def is_new(job_id):
     """Not shown to you yet (unknown jobs count as new)."""
-    row = DB.execute("select status from jobs where id = ?", (job_id,)).fetchone()
-    return row is None or row[0] == "new"
+    rows = _run("select status from jobs where id = ?", (job_id,))
+    return not rows or rows[0][0] == "new"
 
 
 def save_job(job):
-    DB.execute("insert or ignore into jobs (id, data) values (?, ?)", (job["id"], json.dumps(job)))
-    DB.commit()
+    _run("insert or ignore into jobs (id, data) values (?, ?)", (job["id"], json.dumps(job)))
+
+
+def update_job(job):
+    """Overwrite a saved job's data, e.g. with the posting's real URL once a short link is followed."""
+    _run("update jobs set data = ? where id = ?", (json.dumps(job), job["id"]))
 
 
 def get_job(job_id):
-    row = DB.execute("select data from jobs where id = ?", (job_id,)).fetchone()
-    return json.loads(row[0]) if row else None
+    rows = _run("select data from jobs where id = ?", (job_id,))
+    return json.loads(rows[0][0]) if rows else None
 
 
 def set_status(job_id, status):
-    DB.execute("update jobs set status = ? where id = ?", (status, job_id))
-    DB.commit()
+    _run("update jobs set status = ? where id = ?", (status, job_id))
+
+
+def status_counts():
+    """{'shown': 12, 'submitted': 3, ...} over every job ever seen."""
+    return dict(_run("select status, count(*) from jobs group by status"))
 
 
 # applied.csv is the source of truth for "did I already apply?". Add rows by hand for

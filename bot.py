@@ -23,7 +23,7 @@ import workday
 from config import PROFILE, ROOT, env
 from filters import keep, relevance, words
 from store import (already_applied, applied_rows, get_job, get_setting, is_new, log_application, save_job,
-                   set_setting, set_status)
+                   set_setting, set_status, status_counts, update_job)
 
 log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
@@ -31,6 +31,15 @@ TZ = ZoneInfo(env("DELPHI_TZ", "America/Toronto"))
 DIGEST_HOUR = int(env("DIGEST_HOUR", "8"))
 pending = None  # (kind, Future) the running application is waiting on: "text" reply or "confirm" tap
 apply_lock = asyncio.Lock()  # one application at a time so replies can't get crossed
+digest_lock = asyncio.Lock()  # /digest tapped during the daily one would show the same jobs twice
+running = None  # the job being applied to, for /status
+queued = 0  # applications waiting for apply_lock
+STARTED = datetime.now()
+
+
+def fillable(url):
+    """Can the bot fill this posting's form itself?"""
+    return bool(apply.SUPPORTED.search(url) or workday.handles(url))
 
 
 def find_jobs():
@@ -57,42 +66,64 @@ def find_jobs():
     shortlist = canadian + [j for j in ranked if j not in canadian][:60 - len(canadian)]
     picks = llm.rank(shortlist, get_setting("count"))
     for job in picks:
+        # Follow short links now, so the digest can say whether the bot can fill the form and dedupe by real URL.
+        job["url"] = apply.direct_url(final_url(job["url"]))
+        update_job({k: v for k, v in job.items() if k not in ("score", "why")})
         set_status(job["id"], "shown")
-    return picks
+    return [job for job in picks if not already_applied(job)]
 
 
-async def send_digest(app):
-    try:
-        jobs = await asyncio.to_thread(find_jobs)
-    except Exception as e:
-        log.exception("digest failed")
-        await app.bot.send_message(CHAT_ID, f"Digest failed: {e}\nFix it, then send /digest to retry.")
-        return
+async def send_digest(app, quiet_failure=False):
+    """Search, rank and send the picks. Returns False if the search failed (reported unless quiet_failure)."""
+    async with digest_lock:
+        try:
+            jobs = await asyncio.to_thread(find_jobs)
+        except Exception as e:
+            log.exception("digest failed")
+            if not quiet_failure:
+                await app.bot.send_message(CHAT_ID, f"Digest failed: {e}\nI'll retry every hour today, "
+                                                    "or fix it and send /digest.")
+            return False
     if not jobs:
         await app.bot.send_message(CHAT_ID, "No new matches today.")
+    auto_min = get_setting("auto_min")
+    auto = [j for j in jobs if auto_min is not None and j["score"] >= auto_min and fillable(j["url"])]
     for job in jobs:
+        how = "auto-applying" if job in auto else "auto-fill" if fillable(job["url"]) else "fill it yourself"
         await app.bot.send_message(
             CHAT_ID,
             f"<b>{escape(job['title'])}</b>\n{escape(job['company'])} · {escape('; '.join(job['locations']))}\n"
-            f"{job['score']}/10 · {escape(job['why'])}\n<a href=\"{escape(job['url'])}\">Open posting</a>",
+            f"{job['score']}/10 · {escape(job['why'])}\n<a href=\"{escape(job['url'])}\">Open posting</a> · {how}",
             parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=Keyboard([[Button("Apply", callback_data=f"apply:{job['id']}"),
-                                    Button("Skip", callback_data=f"skip:{job['id']}")]]))
+            reply_markup=None if job in auto else Keyboard([[Button("Apply", callback_data=f"apply:{job['id']}"),
+                                                             Button("Skip", callback_data=f"skip:{job['id']}")]]))
+    for job in auto:  # one at a time, in score order (apply_lock queues them)
+        app.create_task(run_apply(job, app.bot))
+    return True
+
+
+failed_on = ""  # the day a scheduled digest last failed, so the retries that day don't each send an error
 
 
 async def tick(ctx):
-    """Hourly. Sends the day's digest once: at DIGEST_HOUR, or on the first tick after (machine was asleep)."""
+    """Hourly. Sends the day's digest once: at DIGEST_HOUR, or on the first tick after (machine was asleep).
+    A failed one (network down, API error) is retried on the next tick instead of skipping the day."""
+    global failed_on
     now = datetime.now(TZ)
     today = now.date().isoformat()
     if get_setting("paused") or now.hour < DIGEST_HOUR or get_setting("last_digest") == today:
         return
-    set_setting("last_digest", today)
-    await send_digest(ctx.application)
+    if await send_digest(ctx.application, quiet_failure=failed_on == today):
+        set_setting("last_digest", today)
+    else:
+        failed_on = today
 
 
 def parse_answers(text, n):
     """'1. foo\\n2) bar' -> ['foo', 'bar']. One unnumbered line: 'a, b, c' with exactly n parts is one answer each,
-    anything else answers all n. None if the count is off."""
+    anything else answers all n. None if the count is off. One question takes the whole reply, paragraphs and all."""
+    if n == 1:
+        return [re.sub(r"^1[.)]\s*", "", text.strip())] if text.strip() else None
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if n > 1 and len(lines) == 1 and not re.match(r"\d+[.)]", lines[0]):
         parts = [p.strip() for p in lines[0].split(",")]
@@ -110,6 +141,14 @@ async def _wait(kind):
         pending = None
 
 
+def _answer(kind, value):
+    """Hand a reply or tap to the application waiting for one. False if none is waiting for this kind."""
+    if pending and pending[0] == kind and not pending[1].done():  # a second quick reply finds it already answered
+        pending[1].set_result(value)
+        return True
+    return False
+
+
 def final_url(url):
     """Where a short link (go.vansh.nyc/eZ -> jobs.ashbyhq.com/...) lands, so the right filler picks it up."""
     try:
@@ -120,70 +159,99 @@ def final_url(url):
         return url
 
 
+async def find_form(url):
+    """The URL whose form the bot can fill: short links followed, ?gh_jid= pages and pages embedding a form resolved."""
+    url = apply.direct_url(await asyncio.to_thread(final_url, url))
+    if not fillable(url):
+        url = await apply.embedded_form(url) or url
+    return url
+
+
 async def run_apply(job, bot):
-    async with apply_lock:
-        job = {**job, "url": await asyncio.to_thread(final_url, job["url"])}
-        if row := already_applied(job):  # e.g. Apply tapped twice while the first run was going
-            await bot.send_message(CHAT_ID, f"You already applied to {job['company']} on {row['date']}.")
-            return
-        await bot.send_message(CHAT_ID, f"Applying to {job['title']} @ {job['company']}…")
+    global running, queued
+    if apply_lock.locked():
+        await bot.send_message(CHAT_ID, f"Queued {job['title']} @ {job['company']}, it starts when "
+                                        f"{running['company'] if running else 'the current one'} is done.")
+    queued += 1
+    try:
+        await apply_lock.acquire()
+    finally:
+        queued -= 1
+    try:
+        running = job
+        await _run_apply(job, bot)
+    finally:
+        running = None
+        apply_lock.release()
 
-        async def ask(questions):
+
+async def _run_apply(job, bot):
+    job = {**job, "url": await find_form(job["url"])}
+    if row := already_applied(job):  # e.g. Apply tapped twice while the first run was going
+        await bot.send_message(CHAT_ID, f"You already applied to {job['company']} on {row['date']}.")
+        return
+    await bot.send_message(CHAT_ID, f"Applying to {job['title']} @ {job['company']}…")
+
+    async def ask(questions):
+        if len(questions) == 1:
+            await bot.send_message(CHAT_ID, f"{job['company']}: {questions[0]}")
+        else:
             numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
-            await bot.send_message(CHAT_ID, f"I need a few answers. Reply with one numbered line each, "
-                                            f"or one line like 'a, b, c', or one line to answer them all:\n{numbered}")
-            while not (answers := parse_answers(await _wait("text"), len(questions))):
-                await bot.send_message(CHAT_ID, f"I need {len(questions)} numbered lines, or one line for all.")
-            await bot.send_message(CHAT_ID, "Got it, saved for next time.")
-            return answers
+            await bot.send_message(CHAT_ID, f"{job['company']} needs a few answers. Reply with one numbered line "
+                                            f"each, or one line like 'a, b, c', or one line to answer them all:\n"
+                                            f"{numbered}")
+        while not (answers := parse_answers(await _wait("text"), len(questions))):
+            await bot.send_message(CHAT_ID, f"I need {len(questions)} numbered lines, or one line for all.")
+        await bot.send_message(CHAT_ID, "Got it.")
+        return answers
 
-        async def confirm(png):
-            if env("CONFIRM_BEFORE_SUBMIT", "1") != "1":
-                return True
-            await bot.send_document(
-                CHAT_ID, png, filename="application.png", caption="Submit this?" + watch_hint(),
-                reply_markup=Keyboard([[Button("Submit", callback_data="confirm:yes"),
-                                        Button("Cancel", callback_data="confirm:no")]]))
-            return await _wait("confirm")
+    async def confirm(png):
+        if env("CONFIRM_BEFORE_SUBMIT", "1") != "1":
+            return True
+        await bot.send_document(
+            CHAT_ID, png, filename="application.png", caption="Submit this?" + watch_hint(),
+            reply_markup=Keyboard([[Button("Submit", callback_data="confirm:yes"),
+                                    Button("Cancel", callback_data="confirm:no")]]))
+        return await _wait("confirm")
 
-        done_button = Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}")]])
+    done_button = Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}")]])
 
-        async def stuck(reason, png):
-            if env("HEADLESS", "1") == "1" and not env("VNC_PASSWORD"):
-                caption = f"{reason}.\n\nThis is what I filled. Finish it here: {job['url']}"
-                await bot.send_document(CHAT_ID, png, filename="form.png", caption=caption[:1024],
-                                        reply_markup=done_button)
-                return False
-            # Watching mode: the browser stays open on your computer until you tap a button.
-            await bot.send_document(
-                CHAT_ID, png, filename="form.png",
-                caption=(f"{reason}.\n\nThe browser is still open on your computer, finish it there."
-                         + watch_hint())[:1024],
-                reply_markup=Keyboard([[Button("I applied ✅", callback_data="stuck:yes"),
-                                        Button("Close browser", callback_data="stuck:no")]]))
-            return await _wait("stuck")
+    async def stuck(reason, png):
+        if env("HEADLESS", "1") == "1" and not env("VNC_PASSWORD"):
+            caption = f"{reason}.\n\nThis is what I filled. Finish it here: {job['url']}"
+            await bot.send_document(CHAT_ID, png, filename="form.png", caption=caption[:1024],
+                                    reply_markup=done_button)
+            return False
+        # Watching mode: the browser stays open on your computer until you tap a button.
+        await bot.send_document(
+            CHAT_ID, png, filename="form.png",
+            caption=(f"{reason}.\n\nThe browser is still open on your computer, finish it there."
+                     + watch_hint())[:1024],
+            reply_markup=Keyboard([[Button("I applied ✅", callback_data="stuck:yes"),
+                                    Button("Close browser", callback_data="stuck:no")]]))
+        return await _wait("stuck")
 
-        error = ""
-        try:
-            site = workday if workday.handles(job["url"]) else apply
-            status = await site.apply(job, ask, confirm, stuck)
-        except Exception as e:  # before the form opened: missing resume, page didn't load, ...
-            log.exception("applying to %s", job["url"])
-            status, error = "failed", str(e)[:300]
-        set_status(job["id"], status)
-        if status == "submitted":
-            log_application(job, "submitted")
-            await bot.send_message(CHAT_ID, f"Submitted ✅ {job['title']} @ {job['company']}")
-        elif status == "manual":
-            log_application(job, "manual")
-            await bot.send_message(CHAT_ID, "Logged in applied.csv.")
-        elif status == "cancelled":
-            await bot.send_message(CHAT_ID, "Cancelled, nothing was submitted. Tap Apply again to retry.")
-        elif status in ("unsupported", "failed"):
-            reason = "I can't fill this site automatically" if status == "unsupported" else f"Couldn't start: {error}"
-            await bot.send_message(CHAT_ID, f"{reason}.\nFinish it here: {job['url']}\n"
-                                            "Or fix the problem and tap Apply again.", reply_markup=done_button)
-        # "handoff": stuck() already sent the screenshot and link.
+    error = ""
+    try:
+        site = workday if workday.handles(job["url"]) else apply
+        status = await site.apply(job, ask, confirm, stuck)
+    except Exception as e:  # before the form opened: missing resume, page didn't load, ...
+        log.exception("applying to %s", job["url"])
+        status, error = "failed", str(e)[:300]
+    set_status(job["id"], status)
+    if status == "submitted":
+        log_application(job, "submitted")
+        await bot.send_message(CHAT_ID, f"Submitted ✅ {job['title']} @ {job['company']}")
+    elif status == "manual":
+        log_application(job, "manual")
+        await bot.send_message(CHAT_ID, "Logged in applied.csv.")
+    elif status == "cancelled":
+        await bot.send_message(CHAT_ID, "Cancelled, nothing was submitted. Tap Apply again to retry.")
+    elif status in ("unsupported", "failed"):
+        reason = "I can't fill this site automatically" if status == "unsupported" else f"Couldn't start: {error}"
+        await bot.send_message(CHAT_ID, f"{reason}.\nFinish it here: {job['url']}\n"
+                                        "Or fix the problem and tap Apply again.", reply_markup=done_button)
+    # "handoff": stuck() already sent the screenshot and link.
 
 
 def start_phone_view():
@@ -251,6 +319,44 @@ async def cmd_resume(update, ctx):
     await update.message.reply_text("Resumed.")
 
 
+async def cmd_auto(update, ctx):
+    arg = (ctx.args or [""])[0].lower()
+    if arg == "off":
+        set_setting("auto_min", None)
+    elif arg.isdigit():
+        set_setting("auto_min", max(0, min(10, int(arg))))
+    auto_min = get_setting("auto_min")
+    if auto_min is None:
+        await update.message.reply_text("Auto-apply is off: tap Apply on the jobs you want.\n"
+                                        "/auto 8 applies to every digest pick scoring 8/10 or more by itself.")
+        return
+    confirm = env("CONFIRM_BEFORE_SUBMIT", "1") == "1"
+    await update.message.reply_text(
+        f"Auto-apply is on for picks scoring {auto_min}/10 or more on sites I can fill. "
+        + ("I'll still send each filled form for your OK (CONFIRM_BEFORE_SUBMIT=1 in .env)." if confirm else
+           "They're submitted without asking (CONFIRM_BEFORE_SUBMIT=0).")
+        + " Questions I can't answer still come to you. /auto off to stop.")
+
+
+async def cmd_status(update, ctx):
+    auto_min = get_setting("auto_min")
+    counts = status_counts()
+    lines = [
+        f"Up since {STARTED:%b %d %H:%M}. " + ("Paused." if get_setting("paused") else
+                                              f"Next digest {DIGEST_HOUR}:00 (last: {get_setting('last_digest') or 'never'})."),
+        f"Searching {', '.join(get_setting('countries'))}, {get_setting('count')} jobs per digest, auto-apply "
+        + ("off." if auto_min is None else f"at {auto_min}/10+."),
+        f"Applying to: {running['title']} @ {running['company']}" + (" (waiting on you)" if pending else "")
+        if running else "Not applying to anything right now.",
+    ]
+    if queued:
+        lines.append(f"{queued} more queued.")
+    lines.append(f"Jobs seen: {sum(counts.values())}, shown {counts.get('shown', 0)}, "
+                 f"submitted {counts.get('submitted', 0)}, finished by you {counts.get('manual', 0)}, "
+                 f"applied.csv rows {len(applied_rows())}.")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def cmd_cost(update, ctx):
     await update.message.reply_text(llm.usage_summary())
 
@@ -293,8 +399,7 @@ async def on_button(update, ctx):
         return
     action, _, arg = q.data.partition(":")
     if action in ("confirm", "stuck"):
-        if pending and pending[0] == action:
-            pending[1].set_result(arg == "yes")
+        _answer(action, arg == "yes")
         await q.edit_message_reply_markup(None)
         return
     job = get_job(arg)
@@ -305,6 +410,9 @@ async def on_button(update, ctx):
         set_status(arg, "skipped")
     elif action == "done":
         await q.edit_message_reply_markup(None)
+        if row := already_applied(job):  # e.g. the bot's own submit went through after all
+            await q.message.reply_text(f"Already in applied.csv ({row['date']}, {row['status']}).")
+            return
         log_application(job, "manual")
         set_status(arg, "manual")
         await q.message.reply_text("Logged in applied.csv.")
@@ -315,11 +423,71 @@ async def on_button(update, ctx):
 
 
 async def on_text(update, ctx):
-    if pending and pending[0] == "text":
-        pending[1].set_result(update.message.text)
+    if not _answer("text", update.message.text):
+        await update.message.reply_text("Nothing's waiting on an answer right now. /status shows what I'm doing.")
+
+
+def check():
+    """python bot.py --check: is everything the bot needs in place? Prints each problem; exit code 1 if any."""
+    import json
+    import sys
+
+    from playwright.sync_api import sync_playwright
+
+    problems, notes = [], []
+
+    def need(ok, problem):
+        if not ok:
+            problems.append(problem)
+        return ok
+
+    need((ROOT / ".env").exists(), "no .env: cp .env.example .env and fill it in")
+    if need(env("TELEGRAM_BOT_TOKEN"), "TELEGRAM_BOT_TOKEN is empty in .env (make a bot with @BotFather)"):
+        try:
+            with urllib.request.urlopen(f"https://api.telegram.org/bot{env('TELEGRAM_BOT_TOKEN')}/getMe", timeout=20) as r:
+                notes.append(f"Telegram bot: @{json.load(r)['result']['username']}")
+        except Exception as e:
+            problems.append(f"Telegram rejected TELEGRAM_BOT_TOKEN: {e}")
+    need(CHAT_ID, "TELEGRAM_CHAT_ID is empty: run python bot.py, send /start to your bot, put the id it replies in .env")
+    if need(env("ANTHROPIC_API_KEY"), "ANTHROPIC_API_KEY is empty in .env"):
+        try:
+            llm._client().models.retrieve(llm.MODEL)
+        except Exception as e:
+            problems.append(f"Anthropic API rejected the key or model {llm.MODEL}: {e}")
+    if need((ROOT / "profile.yaml").exists(), "no profile.yaml: cp profile.example.yaml profile.yaml and fill it in"):
+        for key in ("first_name", "last_name", "email", "phone", "resume_text", "work_auth"):
+            need(PROFILE.get(key), f"profile.yaml: {key} is empty")
+        try:
+            apply.resume_path()
+        except RuntimeError as e:
+            problems.append(str(e))
+    if not env("WORKDAY_PASSWORD"):
+        notes.append("WORKDAY_PASSWORD is empty, so Workday postings (most big companies) will fail to start")
+    if env("CANVAS_TOKEN"):
+        notes.append("Quercus scanning on")
+    try:
+        with sync_playwright() as p:
+            p.chromium.launch().close()
+    except Exception as e:
+        problems.append(f"Playwright's Chromium won't start ({str(e).splitlines()[0]}): "
+                        ".venv/bin/playwright install --with-deps chromium")
+    if env("VNC_PASSWORD") and not all(map(shutil.which, ("Xvfb", "x11vnc", "websockify"))):
+        problems.append("VNC_PASSWORD is set, so the phone view needs: sudo apt install xvfb x11vnc novnc")
+    for note in notes:
+        print("·", note)
+    for problem in problems:
+        print("✗", problem)
+    print("All set." if not problems else f"{len(problems)} thing(s) to fix.")
+    sys.exit(1 if problems else 0)
 
 
 def main():
+    import sys
+
+    if "--check" in sys.argv:
+        check()
+    if not env("TELEGRAM_BOT_TOKEN"):
+        raise SystemExit("TELEGRAM_BOT_TOKEN isn't set. Run: .venv/bin/python bot.py --check")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if env("VNC_PASSWORD"):
@@ -330,7 +498,7 @@ def main():
     app.add_handler(CommandHandler("digest", cmd_digest, me))
     for name, fn in [("country", cmd_country), ("count", cmd_count), ("pause", cmd_pause),
                      ("resume", cmd_resume), ("applied", cmd_applied), ("cost", cmd_cost),
-                     ("apply", cmd_apply)]:
+                     ("apply", cmd_apply), ("auto", cmd_auto), ("status", cmd_status)]:
         app.add_handler(CommandHandler(name, fn, me))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))
