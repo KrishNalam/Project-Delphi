@@ -342,6 +342,28 @@ def test_resume_interrupted():
                      [f"apply:{cut['id']}", f"skip:{cut['id']}"])], sent
 
 
+def test_resume_variants():
+    import apply
+    tmp = Path(tempfile.mkdtemp())
+    for name in ("main", "ml", "hw"):
+        (tmp / f"{name}.pdf").write_bytes(b"%PDF")
+    saved = dict(apply.PROFILE)
+    apply.PROFILE.update(resume_pdf=str(tmp / "main.pdf"), resumes=[
+        {"pdf": str(tmp / "ml.pdf"), "keywords": ["Machine Learning", "ML", "AI"]},
+        {"pdf": str(tmp / "hw.pdf"), "keywords": ["embedded", "C++"]}])
+    try:
+        pick = lambda title: apply.resume_path({"title": title}).stem  # noqa: E731
+        assert pick("Machine Learning Engineer Intern") == "ml"
+        assert pick("ML/AI Intern") == "ml"
+        assert pick("Embedded Software Co-op") == "hw" and pick("C++ Developer Intern") == "hw"
+        assert pick("Software Engineer Intern") == "main"
+        assert pick("Email Marketing Intern") == "main"  # "ai" inside "email" isn't the word AI
+        assert apply.resume_path().stem == "main"
+    finally:
+        apply.PROFILE.clear()
+        apply.PROFILE.update(saved)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

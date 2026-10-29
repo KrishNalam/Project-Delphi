@@ -215,7 +215,7 @@ async def _add_experience(page):
 
 async def apply(job, ask, confirm, stuck):
     """Same contract as apply.apply."""
-    resume = resume_path()
+    resume = resume_path(job)
     if not env("WORKDAY_PASSWORD"):
         raise RuntimeError("set WORKDAY_PASSWORD in .env (8+ characters with upper, lower, number and symbol)")
     async with async_playwright() as p:

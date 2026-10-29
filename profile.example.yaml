@@ -41,6 +41,12 @@ skills: [Python, Java, SQL]
 
 resume_pdf: /home/krish/resume.pdf
 transcript_pdf: # optional, uploaded where a form asks for a transcript
+# Optional other versions of your resume: the first whose keyword is a word in the job title is used instead.
+# resumes:
+#     - pdf: /home/krish/resume-ml.pdf
+#       keywords: [machine learning, ml, ai, data science]
+#     - pdf: /home/krish/resume-hardware.pdf
+#       keywords: [hardware, embedded, firmware, fpga]
 
 # Voluntary self-identification. Blank = "decline to answer".
 eeo:

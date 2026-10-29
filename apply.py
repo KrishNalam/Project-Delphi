@@ -200,10 +200,16 @@ def save_answers(changes, drop=()):
     return answers
 
 
-def resume_path():
-    resume = Path(PROFILE.get("resume_pdf") or "").expanduser()
+def resume_path(job=None):
+    """The resume for this job: the first `resumes:` variant with one of its keywords in the job title, else
+    resume_pdf."""
+    title = f" {re.sub(r'[^a-z0-9+#]+', ' ', job['title'].lower())} " if job else ""
+    chosen = next((v["pdf"] for v in PROFILE.get("resumes") or []
+                   if any(f" {re.sub(r'[^a-z0-9+#]+', ' ', k.lower()).strip()} " in title
+                          for k in v.get("keywords", []))), None)
+    resume = Path(chosen or PROFILE.get("resume_pdf") or "").expanduser()
     if not resume.is_file():
-        raise RuntimeError(f"resume_pdf in profile.yaml doesn't exist: {resume}")
+        raise RuntimeError(f"{'a resumes: pdf' if chosen else 'resume_pdf'} in profile.yaml doesn't exist: {resume}")
     return resume
 
 
@@ -653,7 +659,7 @@ async def apply(job, ask, confirm, stuck):
     """
     if not SUPPORTED.search(job["url"]):
         return "unsupported"
-    resume = resume_path()
+    resume = resume_path(job)
     async with async_playwright() as p:
         page = await open_page(p, apply_url(job["url"]))
         try:

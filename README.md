@@ -94,6 +94,11 @@ Ranking and Quercus scanning use Haiku at low effort on a keyword-shortlisted 60
 filling uses Opus, but only for fields that aren't already known from your profile or saved
 answers, and the profile + resume part of that prompt is cached.
 
+## Resume versions
+
+Have an ML resume and a general one? List the extra versions under `resumes:` in `profile.yaml`, each with
+keywords. A job whose title contains one of those words gets that version; everything else gets `resume_pdf`.
+
 ## Cover letters
 
 When a form requires a cover letter upload, Claude writes one for that job from the posting and your resume

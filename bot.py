@@ -12,6 +12,7 @@ import time
 import urllib.request
 from datetime import datetime, timedelta
 from html import escape
+from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -654,6 +655,9 @@ def check():
             need(PROFILE.get(key), f"profile.yaml: {key} is empty")
         try:
             apply.resume_path()
+            for variant in PROFILE.get("resumes") or []:
+                need(Path(variant.get("pdf") or "").expanduser().is_file() and variant.get("keywords"),
+                     f"profile.yaml resumes: each needs an existing pdf and keywords ({variant})")
         except RuntimeError as e:
             problems.append(str(e))
     if not env("WORKDAY_PASSWORD"):
