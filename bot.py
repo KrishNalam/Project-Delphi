@@ -349,9 +349,15 @@ async def _run_apply(job, bot):
             return False
 
     error = ""
+    # Watchdog: a frozen page can hang the browser forever, and the queue behind it with it. Generous: room for
+    # every wait on you (questions, code, Submit, stuck) plus an hour of form filling.
+    limit = (4 * float(env("ANSWER_TIMEOUT_HOURS", "6")) + 1) * 3600
     try:
         site = workday if workday.handles(job["url"]) else apply
-        status = await site.apply(job, ask, confirm, stuck)
+        status = await asyncio.wait_for(site.apply(job, ask, confirm, stuck), timeout=limit)
+    except asyncio.TimeoutError:
+        log.error("applying to %s took over %.0f hours", job["url"], limit / 3600)
+        status, error = "failed", f"it was still running after {limit / 3600:.0f} hours, so I stopped it"
     except Exception as e:  # before the form opened: missing resume, page didn't load, ...
         log.exception("applying to %s", job["url"])
         status, error = "failed", str(e)[:300]
@@ -365,7 +371,7 @@ async def _run_apply(job, bot):
     elif status == "cancelled":
         await bot.send_message(CHAT_ID, "Cancelled, nothing was submitted. Tap Apply again to retry.")
     elif status in ("unsupported", "failed"):
-        reason = "I can't fill this site automatically" if status == "unsupported" else f"Couldn't start: {error}"
+        reason = "I can't fill this site automatically" if status == "unsupported" else f"Couldn't finish: {error}"
         await bot.send_message(CHAT_ID, f"{reason}.\nFinish it here: {job['url']}\n"
                                         "Or fix the problem and tap Apply again.", reply_markup=done_button)
     # "handoff": stuck() already sent the screenshot and link.
