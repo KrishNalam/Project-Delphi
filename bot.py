@@ -200,7 +200,7 @@ async def _wait(kind, tag=None):
     global pending
     pending = (kind, asyncio.get_running_loop().create_future(), tag)
     try:
-        return await asyncio.wait_for(pending[1], timeout=6 * 3600)
+        return await asyncio.wait_for(pending[1], timeout=float(env("ANSWER_TIMEOUT_HOURS", "6")) * 3600)
     finally:
         pending = None
 

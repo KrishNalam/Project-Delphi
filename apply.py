@@ -675,7 +675,7 @@ async def apply(job, ask, confirm, stuck):
             reason = await why_not_submitted(page)
             reason = reason[0].upper() + reason[1:]
         except TimeoutError:  # a question or the Submit check went unanswered for hours (asyncio's, not Playwright's)
-            reason = "No answer from you for 6 hours, so I stopped here"
+            reason = f"No answer from you for {env('ANSWER_TIMEOUT_HOURS', '6')} hours, so I stopped here"
         except Exception as e:
             log.exception("applying to %s", job["url"])
             reason = f"Something broke while filling the form: {str(e)[:300]}"

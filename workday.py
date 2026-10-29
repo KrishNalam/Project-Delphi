@@ -266,7 +266,7 @@ async def apply(job, ask, confirm, stuck):
                     raise RuntimeError(f"still on '{step}' after Save and Continue")
             raise RuntimeError(f"no Review page after {MAX_PAGES} pages")
         except TimeoutError:  # a question or the Submit check went unanswered for hours (asyncio's, not Playwright's)
-            reason = "No answer from you for 6 hours, so I stopped here"
+            reason = f"No answer from you for {env('ANSWER_TIMEOUT_HOURS', '6')} hours, so I stopped here"
         except Exception as e:
             log.exception("workday %s", job["url"])
             reason = f"Workday: {str(e)[:300]}"

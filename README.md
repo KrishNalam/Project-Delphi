@@ -77,7 +77,7 @@ Wi-Fi. For anywhere else, install [Tailscale](https://tailscale.com) on the comp
 `/auto 8` makes each digest apply to its picks scoring 8/10 or more by itself, one at a time. With
 `CONFIRM_BEFORE_SUBMIT=1` you still get each filled form to approve; set it to `0` in `.env` to have them
 submitted without asking. Questions it can't answer from your profile or `answers.json` still come to you
-(after 6 hours unanswered it gives up on that one and moves on), so answer a few early on and it needs you less
+(after `ANSWER_TIMEOUT_HOURS`, default 6, unanswered it hands that one to you and moves on), so answer a few early on and it needs you less
 and less. If the search fails (network, API), it retries every hour that day.
 
 ## applied.csv
