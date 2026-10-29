@@ -151,6 +151,7 @@ def map_fields(job, fields, answers):
         "- Only use facts from the profile, resume or earlier answers. Never invent facts.\n"
         "- Questions that restate a profile fact (graduation date, school, degree, work authorization) are "
         "answerable: reformat the fact to fit the field (e.g. April 2028 -> 04/2028 or 2028-04-30).\n"
+        "- Dates in text boxes: follow the field's placeholder format; with none, use MM/DD/YYYY.\n"
         "- For fields with options, value must be exactly one of the options "
         "(checkbox groups: comma-separate several).\n"
         "- Self-identification questions with no profile answer: pick the decline/prefer-not-to-say option.\n"
@@ -161,9 +162,9 @@ def map_fields(job, fields, answers):
         # Saved answers change only when you answer something new, so they're cached too (they're most of the input).
         f"Answers the applicant gave to earlier application questions: {json.dumps(answers)}"
     )
-    keep = ("index", "type", "label", "options", "required")
+    keep = ("index", "type", "label", "options", "required", "placeholder")
     return _ask(
         "map_fields",
         f"Job: {job['title']} at {job['company']}.\n\n"
-        f"Form fields: {json.dumps([{k: f[k] for k in keep} for f in fields])}",
+        f"Form fields: {json.dumps([{k: f[k] for k in keep if k == "index" or f.get(k)} for f in fields])}",
         FormPlan, cached=stable)

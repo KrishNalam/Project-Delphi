@@ -53,6 +53,16 @@ EXTRACT_JS = r"""
     }
     return '';
   };
+  // Ashby marks a required question only with a CSS '*' on its title, so look for one in the question's own wrapper.
+  const starred = n => /required/i.test(n.getAttribute('class') || '')
+    || getComputedStyle(n, '::after').content.includes('*') || getComputedStyle(n, '::before').content.includes('*');
+  const marked = (el, count) => {
+    for (let node = el.parentElement, i = 0; node && node !== document.body && i < 6; node = node.parentElement, i++) {
+      if (node.querySelectorAll('input, select, textarea').length > count + 1) return false;  // into the next question
+      if ([...node.querySelectorAll('label, legend')].some(starred)) return true;
+    }
+    return false;
+  };
   const out = [], groups = new Set();
   for (const el of document.querySelectorAll('input, select, textarea, button[aria-haspopup="listbox"]')) {
     const auto = el.getAttribute('data-automation-id') || '';  // Workday's stable field ids
@@ -85,13 +95,19 @@ EXTRACT_JS = r"""
     // Workday dropdown buttons name themselves "Select One Required": the question is in the wrapper instead.
     const grouped = members.length > 1 || boxed || el.tagName === 'SELECT' || type === 'file' || type === 'listbox';
     const skip = type === 'listbox' ? [el.innerText] : options;
-    const f = {index: out.length, type, name: el.name || '', options,
+    // name falls back to the id: Greenhouse's two uploads are both labelled "Attach" but have ids resume / cover_letter.
+    const f = {index: out.length, type, name: el.name || el.id || '', options, workday: !!auto,
                label: clean((grouped ? '' : own) || near(el, members.length, skip) || own || el.placeholder),
-               required: el.required || el.getAttribute('aria-required') === 'true'};
+               placeholder: el.placeholder || '',  // the format a date box wants, e.g. "MM/DD/YYYY"
+               required: el.required || el.getAttribute('aria-required') === 'true' || marked(el, members.length)};
     // Already has a value (Workday prefills from the resume and from saved drafts): leave it alone.
     const chips = el.parentElement.querySelector('[data-automation-id=promptAriaInstruction]');
+    // react-select (Greenhouse, Ashby) empties its <input> after a pick and shows the choice beside it.
+    const picked = type === 'combobox' &&
+      el.closest('[class*=control]')?.querySelector('[class*=single-value], [class*=singleValue], [class*=multi-value]');
     f.filled = type === 'listbox' ? !/^select one/i.test(clean(el.innerText))
       : chips ? !/^0 /.test(chips.innerText)
+      : picked ? true
       : type === 'radio' || type === 'checkbox' ? members.some(m => m.checked)
       : type !== 'file' && !!el.value?.trim();
     if (type === 'datepart') {  // each box is labelled just "Month": take the question from the date's form field
@@ -111,7 +127,7 @@ EXTRACT_JS = r"""
     box.setAttribute('data-delphi', out.length);
     // required: Ashby only marks it in CSS, so assume it
     out.push({index: out.length, type: 'yesno', name: '', options: ['Yes', 'No'], label, required: true,
-              filled: false});
+              filled: false, workday: false, placeholder: ''});
   }
   return out;
 }
@@ -164,10 +180,28 @@ async def _open_dropdown(page, el):
     return popups.last.get_by_role("option"), before
 
 
+# Pages keep closed menus (e.g. the phone-number country picker) in the DOM, so only visible choices count.
+OPTIONS = "[role=option], [data-automation-id=promptOption]"
+MAX_OPTIONS = 60  # longer lists (countries, schools) are search boxes: the value gets typed and matched instead
+
+
 async def read_fields(page):
-    """Every fillable field on the page. Button dropdowns (Workday) get opened once to read their options."""
+    """Every fillable field on the page. Dropdowns get opened once to read their options: Workday's buttons, and
+    other sites' empty comboboxes (react-select shows its choices only when opened)."""
     fields = await page.evaluate(EXTRACT_JS)
     for f in fields:
+        if f["type"] == "combobox" and not f["workday"] and not f["filled"]:
+            el = page.locator(f'[data-delphi="{f["index"]}"]')
+            try:
+                await el.click(timeout=3000)
+                options = page.locator(OPTIONS).filter(visible=True)
+                await options.first.wait_for(timeout=1500)
+                texts = [o.strip() for o in await options.all_inner_texts() if o.strip()]
+                if len(texts) <= MAX_OPTIONS:
+                    f["options"] = texts
+            except Exception:  # nothing until you type (a location search): Claude's value gets typed in
+                pass
+            await page.keyboard.press("Escape")
         if f["type"] == "listbox":
             try:
                 options, _ = await _open_dropdown(page, page.locator(f'[data-delphi="{f["index"]}"]'))
@@ -195,16 +229,21 @@ async def _fill(page, field, value):
     elif kind == "combobox":
         # Search dropdowns load options as you type: click the first one containing the value. If none shows,
         # press Enter: that picks the top match on most sites, and runs the search on Workday's prompts.
+        # An exact match wins, so "No" doesn't pick "Not applicable".
         await el.click()
         await el.fill(value)
-        options = page.locator("[role=option], [data-automation-id=promptOption]")
-        option = options.filter(has_text=re.compile(re.escape(value[:30]), re.I)).first
+        options = page.locator(OPTIONS).filter(visible=True)
+        exact = options.filter(has_text=re.compile(rf"^\s*{re.escape(value.strip())}\s*$", re.I))
+        option = options.filter(has_text=re.compile(re.escape(value.strip()[:30]), re.I))
+        if not field.get("workday"):  # Workday's prompts only search on Enter
+            with contextlib.suppress(Exception):
+                await options.first.wait_for(timeout=4000)
         try:
-            await option.click(timeout=4000)
+            await (exact if await exact.count() else option).first.click(timeout=4000)
         except Exception:
             await el.press("Enter")
             with contextlib.suppress(Exception):
-                await option.click(timeout=3000)
+                await option.first.click(timeout=3000)
     elif kind == "listbox":
         for attempt in range(2):  # a pick sometimes doesn't take; check the button shows it, else try once more
             options, before = await _open_dropdown(page, el)
@@ -238,6 +277,17 @@ async def _fill(page, field, value):
                     await group.nth(i).check(force=True)
                 except Exception:  # Workday's styled-away checkboxes only respond to a real DOM click
                     await group.nth(i).evaluate("e => e.checked || e.click()")
+    elif await el.get_attribute("data-qa") == "location-input":
+        # Lever's location box empties itself on blur unless a suggestion was picked: type the city, then pick the
+        # suggestion sharing the most words with the answer ("Toronto, ON, Canada" -> "Toronto, ON, CAN").
+        await el.fill("")
+        await el.press_sequentially(value.split(",")[0].strip(), delay=30)
+        hits = page.locator(".dropdown-location").filter(visible=True)
+        await hits.first.wait_for(timeout=5000)
+        wanted = set(_norm(value).split())
+        texts = await hits.all_inner_texts()
+        best = max(range(len(texts)), key=lambda i: len(wanted & set(_norm(texts[i]).split())))
+        await hits.nth(best).click()
     else:
         await el.fill(value)
 
@@ -338,7 +388,7 @@ async def fill_form(page, job, ask, resume=None):
         fields = await read_fields(page)
     # Resume goes in the required upload if there is one, else the one labelled resume/CV, else the first.
     files = sorted((f for f in fields if f["type"] == "file"),
-                   key=lambda f: (not f["required"], not re.search(r"resume|cv", f["label"], re.I)))
+                   key=lambda f: (not f["required"], not re.search(r"resume|cv", f"{f['label']} {f['name']}", re.I)))
     if resume and files:
         await page.locator(f'[data-delphi="{files[0]["index"]}"]').set_input_files(resume)
     return first
