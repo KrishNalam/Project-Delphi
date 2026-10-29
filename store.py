@@ -81,14 +81,15 @@ def _key(company, title):
     return re.sub(r"[^a-z0-9]", "", f"{company}{title}".lower())
 
 
-def applied_rows(path=APPLIED_CSV):
+def applied_rows(path=None):
+    path = path or APPLIED_CSV
     if not path.exists():
         return []
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
 
 
-def already_applied(job, path=APPLIED_CSV):
+def already_applied(job, path=None):
     """The applied.csv row for this job (same URL, or same company + title), else None."""
     key, url = _key(job["company"], job["title"]), canonical(job["url"])
     for row in applied_rows(path):
@@ -97,7 +98,8 @@ def already_applied(job, path=APPLIED_CSV):
     return None
 
 
-def log_application(job, status, path=APPLIED_CSV):
+def log_application(job, status, path=None):
+    path = path or APPLIED_CSV
     new = not path.exists()
     with open(path, "a", newline="") as f:
         writer = csv.DictWriter(f, CSV_FIELDS)

@@ -22,7 +22,7 @@ import sources
 import workday
 from config import PROFILE, ROOT, env
 from filters import keep, relevance, words
-from store import (already_applied, applied_rows, get_job, get_setting, is_new, log_application, save_job,
+from store import (_key, already_applied, applied_rows, canonical, get_job, get_setting, is_new, log_application, save_job,
                    set_setting, set_status, status_counts, update_job)
 
 log = logging.getLogger("delphi")
@@ -54,23 +54,28 @@ def find_jobs():
         if keep(job, countries, PROFILE.get("needs_us_sponsorship", True)) and not already_applied(job):
             fresh[job["id"]] = job
     # Only 60 keyword matches (newest first on ties) go to Claude, to keep ranking cheap. Same role posted
-    # twice counts once. Half the spots go to Canadian postings, since US ones need sponsorship.
+    # twice counts once, keeping the company's own link over LinkedIn's (which the bot can't apply through).
+    # Half the spots go to Canadian postings, since US ones need sponsorship.
     resume_words = words(PROFILE.get("resume_text", ""))
     ranked, roles = [], set()
-    for job in sorted(fresh.values(), key=lambda j: (relevance(j, resume_words), j["posted"]), reverse=True):
-        role = (job["company"].lower(), job["title"].lower())
+    for job in sorted(fresh.values(), reverse=True,
+                      key=lambda j: (relevance(j, resume_words), "linkedin.com/" not in j["url"], j["posted"])):
+        role = _key(job["company"], job["title"])  # "Intern, Android" and "Intern - Android" are one role
         if role not in roles:
             roles.add(role)
             ranked.append(job)
     canadian = [j for j in ranked if "canada" in j["countries"]][:30]
     shortlist = canadian + [j for j in ranked if j not in canadian][:60 - len(canadian)]
-    picks = llm.rank(shortlist, get_setting("count"))
-    for job in picks:
+    picks, urls = [], set()
+    for job in llm.rank(shortlist, get_setting("count")):
         # Follow short links now, so the digest can say whether the bot can fill the form and dedupe by real URL.
         job["url"] = apply.direct_url(final_url(job["url"]))
         update_job({k: v for k, v in job.items() if k not in ("score", "why")})
         set_status(job["id"], "shown")
-    return [job for job in picks if not already_applied(job)]
+        if canonical(job["url"]) not in urls and not already_applied(job):
+            urls.add(canonical(job["url"]))
+            picks.append(job)
+    return picks
 
 
 async def send_digest(app, quiet_failure=False):

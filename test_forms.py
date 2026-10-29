@@ -112,6 +112,55 @@ def test_fill_and_submit():
     assert status == "submitted", status
 
 
+def test_bot_flow():
+    """Two Apply taps at once through bot.run_apply with a fake Telegram: the second waits its turn, questions and
+    the Submit tap are answered from 'chat', and both end up in applied.csv."""
+    import bot
+    import store
+
+    tmp = Path(tempfile.mkdtemp())
+    store.APPLIED_CSV = tmp / "applied.csv"
+    PROFILE.update(first_name="Ada", email="ada@x.com", city="Toronto", resume_pdf=str(tmp / "resume.pdf"))
+    (tmp / "resume.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    apply.ANSWERS = tmp / "answers.json"
+    apply.SUPPORTED = apply.re.compile(r"^file:")
+    llm.map_fields = lambda job, fields, answers: llm.FormPlan(fills=[], unknown=[])
+    sent = []
+
+    class FakeBot:
+        async def send_message(self, chat, text, **kw):
+            sent.append(text)
+            # Reply like you would: answers for questions, a code when one is asked for.
+            if "verification code" in text:
+                asyncio.get_running_loop().call_later(0.1, bot._answer, "text", "A7Z")
+            elif "needs a few answers" in text or text.startswith("Acme"):
+                asyncio.get_running_loop().call_later(0.1, bot._answer, "text", "Yes, 04/30/2028, She/her")
+
+        async def send_document(self, chat, png, caption="", **kw):
+            sent.append(caption)
+            if caption.startswith("Submit this?"):
+                asyncio.get_running_loop().call_later(0.1, bot._answer, "confirm", True)
+            else:
+                raise AssertionError(caption)
+
+    jobs = []
+    for i, title in enumerate(["SWE Intern", "Data Intern"]):
+        (tmp / f"form{i}.html").write_text(FORM)
+        jobs.append(bot.sources._job("test", "Acme", title, ["Toronto, ON"], (tmp / f"form{i}.html").as_uri()))
+
+    async def go():
+        fake = FakeBot()
+        await asyncio.gather(bot.run_apply(jobs[0], fake), bot.run_apply(jobs[1], fake))
+    asyncio.run(go())
+    assert any(m.startswith("Queued Data Intern @ Acme") for m in sent), sent
+    assert [m for m in sent if m.startswith("Submitted")] == ["Submitted ✅ SWE Intern @ Acme",
+                                                              "Submitted ✅ Data Intern @ Acme"], sent
+    assert [r["title"] for r in store.applied_rows()] == ["SWE Intern", "Data Intern"]
+    assert bot.running is None and bot.queued == 0 and not bot.apply_lock.locked()
+
+
 if __name__ == "__main__":
-    test_fill_and_submit()
-    print("ok test_fill_and_submit")
+    for name, fn in list(globals().items()):
+        if name.startswith("test_"):
+            fn()
+            print("ok", name)

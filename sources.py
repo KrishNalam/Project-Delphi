@@ -89,8 +89,10 @@ def jobspy_jobs(countries):
             for r in df.fillna("").to_dict("records"):
                 # Prefer the company's own posting so we apply there, not through LinkedIn.
                 url = r.get("job_url_direct") or r["job_url"]
-                jobs.append(_job(r["site"], r["company"], r["title"], [r["location"]], url,
-                                 description=str(r.get("description", "")), countries=[country]))
+                posted = r.get("date_posted")
+                posted = time.mktime(posted.timetuple()) if hasattr(posted, "timetuple") else None
+                jobs.append(_job(r["site"], r["company"], r["title"], [r["location"]] if r["location"] else [], url,
+                                 posted, description=str(r.get("description", "")), countries=[country]))
     return jobs
 
 
