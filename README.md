@@ -13,12 +13,12 @@ sources ─► filter ─► rank (Claude) ─► Telegram digest ─► [Apply]
 
 | What | Where |
 |---|---|
-| Sources: SimplifyJobs + vanshb03 Summer 2027 lists, LinkedIn + Indeed (python-jobspy), Quercus pages and announcements | `sources.py` |
+| Sources: SimplifyJobs + vanshb03 Summer internship lists (moves to next year's by itself), LinkedIn + Indeed (python-jobspy), Quercus pages and announcements | `sources.py` |
 | Rules: internship/co-op titles, Canada/USA toggle, drops US postings that won't sponsor, other-degree (PhD-only) and other-term postings, `/block`ed companies | `filters.py` |
 | Claude: ranking, Quercus extraction, mapping form fields to your profile | `llm.py` |
 | Browser autofill for Greenhouse, Lever, Ashby, Workable (and company pages that embed them) | `apply.py` |
 | Workday: account, sign-in, then the wizard page by page | `workday.py` |
-| Telegram bot and daily schedule | `bot.py` |
+| Telegram bot, digest schedule, apply queue | `bot.py` |
 | `delphi.db` (seen jobs, settings), `applied.csv` (applications) | `store.py` |
 
 ## Setup
@@ -54,7 +54,7 @@ at a digest hour, that digest goes out within an hour of waking up.
 | `/digest` | search now |
 | `/country canada\|usa\|both` | where to look |
 | `/count 5-10` | jobs per digest |
-| `/pause`, `/resume` | stop / restart the daily digest |
+| `/pause`, `/resume` | stop / restart the scheduled digests |
 | `/apply <link> [<link> …]` | apply to any postings, e.g. ones you found yourself or want to redo (in turn) |
 | `/auto 8`, `/auto off` | apply to digest picks scoring 8/10+ without a tap (sites the bot can fill only) |
 | `/status` | what it's doing now, queue, settings, counts |
@@ -78,9 +78,13 @@ Wi-Fi. For anywhere else, install [Tailscale](https://tailscale.com) on the comp
 `/auto 8` makes each digest apply to its picks scoring 8/10 or more by itself, one at a time. With
 `CONFIRM_BEFORE_SUBMIT=1` you still get each filled form to approve; set it to `0` in `.env` to have them
 submitted without asking. Run `/prep` first so the common questions are already answered. Questions it can't
-answer from your profile or `answers.json` still come to you
-(after `ANSWER_TIMEOUT_HOURS`, default 6, unanswered it hands that one to you and moves on), so answer a few early on and it needs you less
-and less. If the search fails (network, API), it retries every hour that day.
+answer from your profile or `answers.json` still come to you; after `ANSWER_TIMEOUT_HOURS` (default 6) without
+a reply it hands that one to you and moves on, so answer a few early on and it needs you less and less.
+
+It's built to be left alone: a failed search (network, API) is retried every hour, applications cut off by a
+restart come back with an Apply-again button (or "it may have gone through" if it was mid-Submit), a frozen
+page is stopped by a watchdog, a source that suddenly returns nothing gets a warning, and `/week` lists anything
+that still needs you.
 
 ## applied.csv
 
@@ -93,7 +97,7 @@ company + title so reposts are caught. Add rows by hand for applications you sen
 
 Every Claude call is logged to `usage.csv` (tokens and dollars); `/cost` summarizes it.
 Ranking and Quercus scanning use Haiku at low effort on a keyword-shortlisted 60 jobs. Form
-filling uses Opus, but only for fields that aren't already known from your profile or saved
+filling and cover letters use Opus, but only for fields that aren't already known from your profile or saved
 answers, and the profile + resume part of that prompt is cached.
 
 ## Resume versions
