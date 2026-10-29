@@ -375,6 +375,7 @@ COMMANDS = [  # shown in Telegram's / menu
     ("digest", "Search now"), ("status", "What I'm doing, settings, counts"),
     ("apply", "Apply to a posting: /apply <link>"), ("auto", "Auto-apply to picks scoring N+: /auto 8, /auto off"),
     ("week", "This week's applications and unfinished ones"), ("applied", "Latest applications"),
+    ("prep", "Answer the common form questions up front"),
     ("answers", "Saved form answers: /answers 3 <new text> to change"), ("forget", "Delete a saved answer: /forget 3"),
     ("block", "Hide a company or title word: /block phd"), ("unblock", "Undo a block"),
     ("country", "canada | usa | both"), ("count", "Jobs per digest, 5-10"), ("pause", "Stop the daily digest"),
@@ -528,6 +529,43 @@ async def cmd_answers(update, ctx):
         return
     await _reply_long(update, "Saved answers (reused on every form):\n" + "\n".join(lines)
                       + "\n\nChange one: /answers 3 <new answer>. Delete one: /forget 3")
+
+
+# Asked on most forms and not in profile.yaml: answering them once up front keeps /auto from stopping to ask.
+PREP_QUESTIONS = [
+    "How did you hear about this job?",
+    "Are you willing to relocate for this internship?",
+    "When is the earliest you can start?",
+    "How long can your internship or co-op term be (e.g. 4, 8, 12 or 16 months)?",
+    "Are you able to work on-site or hybrid at the office?",
+    "What are your hourly pay expectations?",
+    "What are your pronouns?",
+    "Have you worked at or interned with this company before?",
+]
+
+
+async def cmd_prep(update, ctx):
+    missing = [q for q in PREP_QUESTIONS if q not in apply.load_answers()]
+    if not missing:
+        await update.message.reply_text("All the common questions are answered. /answers shows them.")
+        return
+    ctx.application.create_task(prep(ctx.bot, missing))
+
+
+async def prep(bot, questions):
+    if apply_lock.locked():
+        await bot.send_message(CHAT_ID, "I'll ask once the current application is done.")
+    async with apply_lock:  # so these answers can't be taken as a form's (one thing waits on replies at a time)
+        numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
+        await bot.send_message(CHAT_ID, "Common application questions: answer them once and I'll reuse them on every "
+                                        "form. One numbered line each:\n" + numbered)
+        try:
+            while not (replies := parse_answers(await _wait("text"), len(questions))):
+                await bot.send_message(CHAT_ID, f"I need {len(questions)} numbered lines.")
+        except asyncio.TimeoutError:
+            return
+        apply.save_answers(dict(zip(questions, replies)))
+        await bot.send_message(CHAT_ID, "Saved. /answers to review or change them.")
 
 
 async def cmd_forget(update, ctx):
@@ -722,7 +760,7 @@ def main():
                      ("resume", cmd_resume), ("applied", cmd_applied), ("cost", cmd_cost),
                      ("apply", cmd_apply), ("auto", cmd_auto), ("status", cmd_status), ("answers", cmd_answers),
                      ("forget", cmd_forget), ("block", cmd_block), ("unblock", cmd_unblock),
-                     ("week", cmd_week)]:
+                     ("week", cmd_week), ("prep", cmd_prep)]:
         app.add_handler(CommandHandler(name, fn, me))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))

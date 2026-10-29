@@ -58,6 +58,7 @@ digest goes out within an hour of waking up.
 | `/apply <link>` | apply to any posting, e.g. one you found yourself or want to redo |
 | `/auto 8`, `/auto off` | apply to digest picks scoring 8/10+ without a tap (sites the bot can fill only) |
 | `/status` | what it's doing now, queue, settings, counts |
+| `/prep` | answer the common form questions (start date, relocation, pay, …) once, up front |
 | `/answers`, `/answers 3 <text>`, `/forget 3` | see, change or delete the answers it reuses on forms |
 | `/block <company or word>`, `/unblock` | never show (or auto-apply to) a company, or titles with a word, e.g. `/block phd`. Digest jobs have a 🚫 Company button too |
 | `/applied` | latest rows of `applied.csv` |
@@ -76,7 +77,8 @@ Wi-Fi. For anywhere else, install [Tailscale](https://tailscale.com) on the comp
 
 `/auto 8` makes each digest apply to its picks scoring 8/10 or more by itself, one at a time. With
 `CONFIRM_BEFORE_SUBMIT=1` you still get each filled form to approve; set it to `0` in `.env` to have them
-submitted without asking. Questions it can't answer from your profile or `answers.json` still come to you
+submitted without asking. Run `/prep` first so the common questions are already answered. Questions it can't
+answer from your profile or `answers.json` still come to you
 (after `ANSWER_TIMEOUT_HOURS`, default 6, unanswered it hands that one to you and moves on), so answer a few early on and it needs you less
 and less. If the search fails (network, API), it retries every hour that day.
 

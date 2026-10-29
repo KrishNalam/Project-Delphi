@@ -251,6 +251,23 @@ def test_answers_commands():
         assert "/forget <number>" in run(bot.cmd_forget, "9")
         # A form that was open during /forget saves only its new answers, not its stale copy of the file.
         assert apply.save_answers({"GPA": "3.9"}) == {"Earliest start date?": "September 2027", "GPA": "3.9"}
+
+        # /prep asks only what isn't saved yet, in one message, and saves the replies under those questions.
+        msgs = []
+
+        class Bot:
+            async def send_message(chat, text, **kw):
+                msgs.append(text)
+                if text.startswith("Common application questions"):
+                    n = text.count("\n")
+                    asyncio.get_running_loop().call_later(
+                        0.05, bot._answer, "text", "\n".join(f"{i}. a{i}" for i in range(1, n + 1)))
+        apply.save_answers({bot.PREP_QUESTIONS[0]: "LinkedIn"})
+        missing = [q for q in bot.PREP_QUESTIONS if q not in apply.load_answers()]
+        asyncio.run(bot.prep(Bot, missing))
+        saved = apply.load_answers()
+        assert saved[bot.PREP_QUESTIONS[0]] == "LinkedIn" and saved[bot.PREP_QUESTIONS[1]] == "a1"
+        assert all(q in saved for q in bot.PREP_QUESTIONS) and msgs[-1].startswith("Saved.")
     finally:
         apply.ANSWERS = saved_path
 
