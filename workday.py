@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
 
-from apply import SUCCESS, _wait_count, fill_form, open_page, resume_path
+from apply import SUCCESS, _wait_count, fill_form, open_page, resume_path, settle
 from config import PROFILE, env
 from store import get_setting, set_setting
 
@@ -45,7 +45,7 @@ async def _press(page, automation_id):
     # Workday lays an invisible "click_filter" div over its buttons. A forced click lands on it,
     # which is what Workday listens to.
     await _id(page, automation_id).click(force=True)
-    await page.wait_for_load_state("networkidle")
+    await settle(page)
     await page.wait_for_timeout(1500)
 
 
@@ -107,7 +107,7 @@ async def _signed_in(page):
 async def _open_application(page, url):
     """Job posting -> Apply -> Autofill with Resume. Lands on sign-in, or the wizard if already signed in."""
     if url not in page.url:
-        await page.goto(url, wait_until="networkidle", timeout=60000)
+        await settle(page, url)
     if await _visible(page, "legalNoticeAcceptButton"):
         await _press(page, "legalNoticeAcceptButton")
     if not await _visible(page, "adventureButton", 5000):
@@ -225,7 +225,8 @@ async def apply(job, ask, confirm, stuck):
             await _sign_in(page, ask, job["url"])
             for _ in range(MAX_PAGES):
                 if "Something went wrong" in await page.inner_text("body"):  # Workday's own hiccup; a reload clears it
-                    await page.reload(wait_until="networkidle")
+                    await page.reload()
+                    await settle(page)
                     await page.wait_for_timeout(3000)
                 step = await _step(page)
                 if re.search(r"review", step, re.I):

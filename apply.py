@@ -1,6 +1,6 @@
 """Fill out (and submit) an application in a real browser with Playwright.
 
-Greenhouse, Lever and Ashby forms are handled here; Workday in workday.py, which reuses
+Greenhouse, Lever, Ashby and Workable forms are handled here; Workday in workday.py, which reuses
 fill_form(). Anything else (iCIMS, Oracle, ...) is handed back to you as a link.
 Debug: python apply.py <job url>  prints the form fields the bot sees.
 """
@@ -21,13 +21,15 @@ from config import PROFILE, ROOT, env
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
 DISPLAY = ":99"  # virtual screen for the phone view (see bot.start_phone_view)
-SUPPORTED = re.compile(r"greenhouse\.io|lever\.co|ashbyhq\.com")
+SUPPORTED = re.compile(r"greenhouse\.io|lever\.co|ashbyhq\.com|apply\.workable\.com")
 # Single tick boxes: agreements get ticked, promotions stay off, the site's own on/off settings are left alone.
 CONSENT = re.compile(r"understand|agree|acknowledge|consent|accept|certify|confirm|attest|terms|privacy|allow|"
                      r"permission|authori[sz]", re.I)
 PROMOTIONAL = re.compile(r"promot|marketing|newsletter|subscribe|sign (me )?up|mailing list|job (alerts?|postings?)|"
                          r"talent (community|network)", re.I)
 SETTING = re.compile(r"currently work here|preferred name", re.I)
+COOKIES_DECLINE = re.compile(r"^(decline|reject|refuse)( all)?( (optional|non-essential))?( cookies)?$", re.I)
+COOKIES_ACCEPT = re.compile(r"^(accept|allow)( all)?( cookies)?$", re.I)
 SUCCESS = re.compile(r"thank(s| you) for (applying|your application|your interest)|application (has been )?"
                      r"(received|submitted)|successfully submitted", re.I)
 
@@ -141,7 +143,40 @@ def apply_url(url):
         return base + "/apply"
     if "ashbyhq.com" in base and not base.endswith("/application"):
         return base + "/application"
+    if "apply.workable.com" in base and not base.endswith("/apply"):
+        return base + "/apply"
     return url
+
+
+GH_JID = re.compile(r"[?&]gh_jid=(\d+)")
+# A link to one posting's form (not a whole job board) on a site we can fill, Workday included.
+FORM_LINK = re.compile(r"greenhouse\.io/(\S*/jobs/\d+|embed/job_app\?\S*token=\d+)|jobs\.lever\.co/[^/]+/[0-9a-f-]{36}"
+                       r"|jobs\.ashbyhq\.com/[^/]+/[0-9a-f-]{36}|apply\.workable\.com/[^/]+/j/\w+"
+                       r"|\.myworkday(jobs|site)\.com/\S+/job/")
+
+
+def direct_url(url):
+    """Career pages that embed Greenhouse name the job with ?gh_jid=123; Greenhouse redirects its embed link for that
+    id to the form itself (careers.withwaymo.com/jobs?gh_jid=8306841 -> job-boards.greenhouse.io/embed/...)."""
+    if match := GH_JID.search(url):
+        return f"https://boards.greenhouse.io/embed/job_app?token={match[1]}"
+    return url
+
+
+async def embedded_form(url):
+    """For a company page we can't fill: the one supported form it embeds or links to, else None."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await settle(page, url)
+            links = await page.evaluate("() => [...document.querySelectorAll('iframe[src], a[href]')]"
+                                        ".map(e => e.src || e.href)")
+        except Exception as e:
+            log.warning("looking for a form on %s: %s", url, e)
+            return None
+    forms = {direct_url(link).split("#")[0] for link in links if FORM_LINK.search(direct_url(link))}
+    return forms.pop() if len(forms) == 1 else None  # several = a list of jobs, not this one
 
 
 def resume_path():
@@ -159,8 +194,24 @@ async def open_page(p, url):
         browser = await p.chromium.launch(headless=env("HEADLESS", "1") == "1")
     page = await browser.new_page()
     page.set_default_timeout(10000)  # a widget that won't take a click fails fast instead of hanging 30s
-    await page.goto(url, wait_until="networkidle", timeout=60000)
+    await settle(page, url)
     return page
+
+
+async def settle(page, url=None):
+    """Go to `url` (if given) and wait for the page to finish loading. Career sites full of trackers never go
+    network-idle, so that wait is capped: the page is usable by then."""
+    if url:
+        await page.goto(url, wait_until="load", timeout=60000)
+    with contextlib.suppress(Exception):
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    # A cookie banner can sit over the Submit button (Workable's does): decline it, or accept if that's the only way.
+    for name in (COOKIES_DECLINE, COOKIES_ACCEPT):
+        button = page.get_by_role("button", name=name).filter(visible=True)
+        with contextlib.suppress(Exception):
+            if await button.count():
+                await button.first.click(timeout=3000)
+                return
 
 
 async def _wait_count(locator, done, page):
@@ -305,6 +356,7 @@ def known_values(fields, answers):
         (r"^e ?mail( address)?$", p.get("email")), (r"^(phone|mobile)( number)?$", p.get("phone")),
         (r"^linkedin( profile| url)?$", p.get("linkedin")), (r"^github( profile| url)?$", p.get("github")),
         (r"^(portfolio|website|personal website)( url)?$", p.get("website")),
+        (r"^(current )?(location|address|city)( city)?$", p.get("city")),
     ]
     saved = {_norm(label): str(answer) for label, answer in answers.items()}
     values = {}
@@ -371,7 +423,9 @@ async def fill_form(page, job, ask, resume=None):
     fields = await read_fields(page)
     first, seen = fields, set()
     for _ in range(3):  # an answer can reveal a follow-up question (e.g. a referrer's name), so look again
-        todo = [f for f in fields if (f["label"], f["type"]) not in seen and not f["filled"]]
+        # Workday's prefilled values come from your resume and saved drafts, so they stay. Elsewhere a prefill is the
+        # site's guess (Workable puts the server's geo-IP city in Address), so it gets overwritten.
+        todo = [f for f in fields if (f["label"], f["type"]) not in seen and not (f["filled"] and f["workday"])]
         if not todo:
             break
         seen |= {(f["label"], f["type"]) for f in todo}
