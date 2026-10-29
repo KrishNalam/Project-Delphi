@@ -30,6 +30,7 @@ FORM = """<!doctype html><html><head><style>
   <fieldset><legend>Pronouns</legend>
     <label><input type="radio" name="p" value="she" required>She/her</label><label><input type="radio" name="p" value="he">He/him</label>
   </fieldset>
+  <label><input type="checkbox" id="promo" checked>Send me job alerts and news</label>
   <label for="resume">Resume</label><input type="file" id="resume">
   <label for="cover">Cover Letter*</label><input type="file" id="cover" required>
   <label for="why">Why Acme?</label><textarea id="why"></textarea>
@@ -93,7 +94,7 @@ def test_fill_and_submit():
             const $ = id => document.getElementById(id);
             return {auth: window.picked, city: $('city').value, grad: $('grad').value, first: $('first').value,
                     pronoun: document.querySelector('[name=p]:checked')?.value, resume: $('resume').files[0]?.name,
-                    cover: $('cover').files[0]?.name};
+                    cover: $('cover').files[0]?.name, promo: $('promo').checked};
         }"""))
         return True
 
@@ -115,7 +116,8 @@ def test_fill_and_submit():
     assert auth["options"] == ["Yes", "No", "Not sure"] and auth["required"], auth  # visible choices only, CSS '*'
     assert seen["Graduation date"]["placeholder"] == "MM/DD/YYYY"
     assert filled == {"auth": "Yes", "city": "Toronto, ON, Canada", "grad": "04/30/2028", "first": "Ada",
-                      "pronoun": "she", "resume": "resume.pdf", "cover": "acme-intern.pdf"}, filled
+                      "pronoun": "she", "resume": "resume.pdf", "cover": "acme-intern.pdf",
+                      "promo": False}, filled  # the site's pre-ticked marketing opt-in got unticked
     # The essay question and the cover letter both got the job ad's text.
     assert "rocket-powered roller skates" in seen["posting"] and "rocket-powered" in seen["letter_posting"]
     letter = tmp / "cover_letters" / "acme-intern.pdf"

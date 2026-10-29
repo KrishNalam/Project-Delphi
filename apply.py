@@ -503,6 +503,9 @@ async def fill_form(page, job, ask, resume=None):
                     await _fill(page, f, "yes")
                 except Exception as e:
                     log.warning("tick %r: %s", f["label"], e)
+            elif f["filled"] and not f["required"] and PROMOTIONAL.search(f"{f['label']} {f['options'][0]}"):
+                with contextlib.suppress(Exception):  # a marketing opt-in the site ticked for you
+                    await page.locator(f'[data-delphi-option="{f["index"]}"]').first.uncheck(force=True)
         await _fill_fields(page, job, ask, fields, todo, answers)
         fields = await read_fields(page)
     return first
