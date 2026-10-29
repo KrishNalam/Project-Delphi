@@ -14,7 +14,7 @@ sources ─► filter ─► rank (Claude) ─► Telegram digest ─► [Apply]
 | What | Where |
 |---|---|
 | Sources: SimplifyJobs + vanshb03 Summer 2027 lists, LinkedIn + Indeed (python-jobspy), Quercus pages and announcements | `sources.py` |
-| Rules: internship/co-op titles, Canada/USA toggle, drops US postings that won't sponsor | `filters.py` |
+| Rules: internship/co-op titles, Canada/USA toggle, drops US postings that won't sponsor, other-degree (PhD-only) and other-term postings, `/block`ed companies | `filters.py` |
 | Claude: ranking, Quercus extraction, mapping form fields to your profile | `llm.py` |
 | Browser autofill for Greenhouse, Lever, Ashby, Workable (and company pages that embed them) | `apply.py` |
 | Workday: account, sign-in, then the wizard page by page | `workday.py` |

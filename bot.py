@@ -40,8 +40,8 @@ STARTED = datetime.now()
 
 
 def fillable(url):
-    """Can the bot fill this posting's form itself?"""
-    return bool(apply.SUPPORTED.search(url) or workday.handles(url))
+    """Can the bot fill this posting's form itself? (Workday needs WORKDAY_PASSWORD for the account it makes.)"""
+    return bool(apply.SUPPORTED.search(url) or (workday.handles(url) and env("WORKDAY_PASSWORD")))
 
 
 source_warnings = []  # set by find_jobs, sent with the digest
@@ -69,7 +69,8 @@ def find_jobs():
         if not is_new(job["id"]):
             continue
         save_job(job)
-        if (keep(job, countries, PROFILE.get("needs_us_sponsorship", True)) and not blocked(job, blocks)
+        if (keep(job, countries, PROFILE.get("needs_us_sponsorship", True), PROFILE.get("degree_level"),
+                 PROFILE.get("terms") or ()) and not blocked(job, blocks)
                 and not already_applied(job)):
             fresh[job["id"]] = job
     # Only 60 keyword matches (newest first on ties) go to Claude, to keep ranking cheap. Same role posted
@@ -288,6 +289,11 @@ async def _run_apply(job, bot):
         return answers
 
     async def confirm(png):
+        # A cover letter Claude wrote for this form: you get it to read (and keep), even when submitting unasked.
+        if letter := job.pop("cover_letter", None):
+            with contextlib.suppress(Exception):
+                await bot.send_document(CHAT_ID, letter.read_bytes(), filename=letter.name,
+                                        caption=f"Cover letter for {job['company']}")
         if env("CONFIRM_BEFORE_SUBMIT", "1") != "1":
             return True
         return await _buttons(bot, "confirm", png, "application.png", "Submit this?" + watch_hint(),

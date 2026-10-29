@@ -139,7 +139,7 @@ def test_bot_flow():
     apply.SUPPORTED = apply.re.compile(r"^file:")
     llm.map_fields = lambda job, fields, answers, posting="": llm.FormPlan(fills=[], unknown=[])
     llm.cover_letter = lambda job, posting, answers: ["Hello."]
-    sent, stale, cleared = [], [], []
+    sent, stale, cleared, letters = [], [], [], []
 
     class FakeBot:
         async def send_message(self, chat, text, **kw):
@@ -152,6 +152,9 @@ def test_bot_flow():
 
         async def send_document(self, chat, png, caption="", reply_markup=None, **kw):
             sent.append(caption)
+            if caption.startswith("Cover letter for"):
+                letters.append(png[:4])
+                return
             if not caption.startswith("Submit this?"):
                 raise AssertionError(caption)
             kind, tag, _ = reply_markup.inline_keyboard[0][0].callback_data.split(":")
@@ -180,6 +183,7 @@ def test_bot_flow():
     assert [r["title"] for r in store.applied_rows()] == ["SWE Intern", "Data Intern"]
     assert bot.running is None and bot.queued == 0 and not bot.apply_lock.locked()
     assert stale == [False, False] and cleared == [None, None]  # stale taps ignored, buttons removed after use
+    assert letters == [b"%PDF", b"%PDF"]  # each application's cover letter was sent to read before Submit
 
 
 if __name__ == "__main__":

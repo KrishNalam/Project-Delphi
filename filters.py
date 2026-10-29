@@ -13,9 +13,17 @@ NO_SPONSOR = re.compile(
 )
 
 
-def keep(job, countries, needs_us_sponsorship=True):
-    """Internship-ish title, in an enabled country, and (for the US) not ruling out sponsorship."""
+def keep(job, countries, needs_us_sponsorship=True, degree=None, terms=()):
+    """Internship-ish title, in an enabled country, and (for the US) not ruling out sponsorship. With `degree`
+    ("Bachelor's") or `terms` (["Summer 2027"]) from the profile, listings that say they're for other degrees
+    (PhD-only) or other terms are dropped; ones that don't say are kept."""
     if not INTERN.search(job["title"]):
+        return False
+    if degree and job.get("degrees") and degree.lower() not in (d.lower() for d in job["degrees"]):
+        return False
+    listed = [t.lower() for t in job.get("terms", [])]
+    # "Summer" (vanshb03's season) and "Summer 2027" (Simplify's term) match either way round.
+    if terms and listed and not any(a in b or b in a for a in (t.lower() for t in terms) for b in listed):
         return False
     ca_ok = "canada" in countries
     us_ok = "usa" in countries and not (needs_us_sponsorship and (

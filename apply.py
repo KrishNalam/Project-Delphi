@@ -275,6 +275,8 @@ async def read_fields(page):
         if f["type"] == "combobox" and not f["workday"] and not f["filled"]:
             el = page.locator(f'[data-delphi="{f["index"]}"]')
             try:
+                # Blur first: a widget that opens on focus stays shut when clicked while already focused.
+                await page.evaluate("document.activeElement?.blur()")
                 await el.click(timeout=3000)
                 await page.locator(OPTIONS).filter(visible=True).first.wait_for(timeout=1500)
                 options = await _menu(page, el)
@@ -467,6 +469,14 @@ async def fill_form(page, job, ask, resume=None):
             await page.locator("input:visible, select:visible, textarea:visible").first.wait_for(timeout=20000)
             await page.wait_for_timeout(1000)  # the rest of the form renders with it
         fields = await read_fields(page)
+    # Uploads first: Lever, Ashby and Workable read the resume and fill fields from it, which would otherwise
+    # overwrite answers after the screenshot you approved.
+    if await _upload_files(page, job, fields, resume, answers):
+        await settle(page)
+        with contextlib.suppress(Exception):  # Lever's "Analyzing resume..."
+            await page.get_by_text(re.compile(r"analyzing|parsing|uploading", re.I)).first.wait_for(
+                state="hidden", timeout=20000)
+        fields = await read_fields(page)
     first, seen = fields, set()
     workday = bool(re.search(r"\.myworkday(jobs|site)\.com/", page.url))
     for attempt in range(3):  # an answer can reveal a follow-up question (e.g. a referrer's name), so look again
@@ -489,7 +499,6 @@ async def fill_form(page, job, ask, resume=None):
                     log.warning("tick %r: %s", f["label"], e)
         await _fill_fields(page, job, ask, fields, todo, answers)
         fields = await read_fields(page)
-    await _upload_files(page, job, fields, resume, answers)
     return first
 
 
@@ -517,7 +526,7 @@ async def _upload_files(page, job, fields, resume, answers):
         kind = _file_kind(f)
         if kind == "cover" and cover != "never" and (f["required"] or cover == "always"):
             try:
-                uploads[f["index"]] = await cover_letter_pdf(page, job, answers)
+                uploads[f["index"]] = job["cover_letter"] = await cover_letter_pdf(page, job, answers)
             except Exception as e:  # the screenshot shows the empty upload; you can attach one yourself
                 log.warning("cover letter for %s: %s", job["company"], e)
         elif kind == "transcript" and PROFILE.get("transcript_pdf"):
@@ -526,6 +535,7 @@ async def _upload_files(page, job, fields, resume, answers):
                 uploads[f["index"]] = transcript
     for index, path in uploads.items():
         await page.locator(f'[data-delphi="{index}"]').set_input_files(path)
+    return bool(uploads)
 
 
 async def posting_text(page, job):
@@ -595,6 +605,24 @@ async def _submit(page):
     await page.wait_for_timeout(6000)
 
 
+async def why_not_submitted(page):
+    """After a Submit that didn't confirm: a visible CAPTCHA challenge, or the form's own error messages."""
+    captcha = page.locator('iframe[src*="recaptcha/api2/bframe"], iframe[src*="hcaptcha.com"][src*="challenge"], '
+                           'iframe[title*="challenge" i]').filter(visible=True)
+    if await captcha.count():
+        return "a CAPTCHA came up after Submit, so it needs you"
+    errors = page.locator('[role=alert], [aria-live=assertive], [class*="error" i]:not(:has(*)), '
+                          '[class*="invalid" i]:not(:has(*))').filter(visible=True)
+    texts = []
+    for text in await errors.all_inner_texts():
+        text = " ".join(text.split())
+        if 2 < len(text) < 200 and text not in texts:
+            texts.append(text)
+    if texts:
+        return "the form wasn't accepted: " + "; ".join(texts[:4])
+    return "I clicked Submit but couldn't confirm it went through (often a CAPTCHA or a rejected field)"
+
+
 async def _verify_email(page, ask, before):
     """If the site emailed a code to confirm the application, ask for it, type it in and submit again.
     The code goes in one box, or one character per box. False if no code was asked for. `before` is the labels the
@@ -638,7 +666,8 @@ async def apply(job, ask, confirm, stuck):
                 return "submitted"
             if await _verify_email(page, ask, {f["label"] for f in fields}) and SUCCESS.search(await page.inner_text("body")):
                 return "submitted"
-            reason = "I clicked submit but couldn't confirm it went through (often a CAPTCHA or a rejected field)"
+            reason = await why_not_submitted(page)
+            reason = reason[0].upper() + reason[1:]
         except TimeoutError:  # a question or the Submit check went unanswered for hours (asyncio's, not Playwright's)
             reason = "No answer from you for 6 hours, so I stopped here"
         except Exception as e:

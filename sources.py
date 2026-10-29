@@ -42,12 +42,15 @@ def country_of(location):
     return None if "remote" in low else "other"
 
 
-def _job(source, company, title, locations, url, posted=None, sponsorship="Other", description="", countries=None):
+def _job(source, company, title, locations, url, posted=None, sponsorship="Other", description="", countries=None,
+         degrees=(), terms=()):
+    """degrees / terms: what the listing says it's open to ("PhD", "Summer 2027"); empty when it doesn't say."""
     return {
         "id": hashlib.sha1(canonical(url).encode()).hexdigest()[:16],
         "source": source, "company": company, "title": title, "locations": locations or ["Unknown"],
         "url": url, "posted": posted or time.time(), "sponsorship": sponsorship, "description": description,
         "countries": countries or list({country_of(loc) for loc in locations}) or [None],
+        "degrees": list(degrees), "terms": [t for t in terms if t and t != "N/A"],
     }
 
 
@@ -79,7 +82,9 @@ def github_repos():
         for x in listings:
             if x.get("active") and x.get("is_visible", True) and x.get("date_posted", 0) >= cutoff:
                 jobs.append(_job(repo.split("/")[0], x["company_name"], x["title"], x.get("locations", []),
-                                 x["url"], x["date_posted"], x.get("sponsorship", "Other")))
+                                 x["url"], x["date_posted"], x.get("sponsorship", "Other"),
+                                 degrees=x.get("degrees") or [],
+                                 terms=x.get("terms") or ([x["season"]] if x.get("season") else [])))
     # Last year's repo can mirror this year's listings: one job per posting.
     return list({(job["source"], job["id"]): job for job in jobs}.values())
 

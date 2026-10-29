@@ -38,6 +38,14 @@ def test_keep():
     # Sponsorship only matters for the US side of a multi-country posting.
     assert keep(job(sponsorship="U.S. Citizenship is Required", locations=["Austin, TX", "Toronto, ON"]), both)
     assert keep(job(locations=["Remote"]), ["canada"])
+    # Degree and term, when the listing says and the profile asks.
+    phd = job(degrees=["PhD"])
+    assert keep(phd, both) and not keep(phd, both, degree="Bachelor's")
+    assert keep(job(degrees=["Bachelor's", "Master's"]), both, degree="bachelor's")
+    assert keep(job(), both, degree="Bachelor's")  # doesn't say: kept
+    assert not keep(job(terms=["Winter 2027"]), both, terms=["Summer 2027"])
+    assert keep(job(terms=["Summer"]), both, terms=["Summer 2027"])  # vanshb03's season
+    assert keep(job(terms=["N/A"]), both, terms=["Summer 2027"])
 
 
 def test_relevance():
@@ -158,7 +166,11 @@ def test_form_urls():
     for url in ["https://boards.greenhouse.io/acme", "https://jobs.lever.co/acme", "https://acme.com/careers"]:
         assert not FORM_LINK.search(url), url  # whole job boards, not one posting
     assert fillable("https://apply.workable.com/rokt/j/616F2D0286/apply")
+    import os
+    os.environ["WORKDAY_PASSWORD"] = "Pw1!pass"
     assert fillable("https://x.wd5.myworkdayjobs.com/en-US/External/job/Intern_R1")
+    del os.environ["WORKDAY_PASSWORD"]
+    assert not fillable("https://x.wd5.myworkdayjobs.com/en-US/External/job/Intern_R1")  # can't make the account
     assert not fillable("https://jobs.smartrecruiters.com/Bosch/1")
 
 
