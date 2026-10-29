@@ -17,7 +17,7 @@ create table if not exists settings (key text primary key, value text);
 """)
 # auto_min: digest picks scoring at least this get applied to without a tap (None = off).
 DEFAULTS = {"countries": ["canada", "usa"], "count": 8, "paused": False, "last_digest": "", "workday_accounts": [],
-            "auto_min": None}
+            "auto_min": None, "source_counts": {}}
 
 
 def _run(sql, args=()):

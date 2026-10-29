@@ -44,9 +44,25 @@ def fillable(url):
     return bool(apply.SUPPORTED.search(url) or workday.handles(url))
 
 
+source_warnings = []  # set by find_jobs, sent with the digest
+
+
+def check_sources(found):
+    """Jobs per source this run; a source that had jobs last time and none now gets a warning (a list moved, a site
+    started blocking us), since nothing else would show it."""
+    counts = {}
+    for job in found:
+        counts[job["source"]] = counts.get(job["source"], 0) + 1
+    before = get_setting("source_counts")
+    set_setting("source_counts", counts)
+    return [f"⚠️ {source} returned no jobs this time (it had {n} last time)."
+            for source, n in before.items() if n and not counts.get(source)]
+
+
 def find_jobs():
     countries = get_setting("countries")
     found = sources.github_repos() + sources.jobspy_jobs(countries) + sources.canvas_jobs()
+    source_warnings[:] = check_sources(found)
     fresh = {}
     for job in found:
         # Only jobs already shown are skipped, so unpicked or filtered-out ones get another look later.
@@ -92,6 +108,8 @@ async def send_digest(app, quiet_failure=False):
             return False
     if not jobs:
         await app.bot.send_message(CHAT_ID, "No new matches today.")
+    if source_warnings:
+        await app.bot.send_message(CHAT_ID, "\n".join(source_warnings))
     auto_min = get_setting("auto_min")
     auto = [j for j in jobs if auto_min is not None and j["score"] >= auto_min and fillable(j["url"])]
     sent_all = True
@@ -383,6 +401,8 @@ async def cmd_status(update, ctx):
     ]
     if queued:
         lines.append(f"{queued} more queued.")
+    if sources_now := get_setting("source_counts"):
+        lines.append("Last search: " + ", ".join(f"{s} {n}" for s, n in sorted(sources_now.items())) + ".")
     lines.append(f"Jobs seen: {sum(counts.values())}, shown {counts.get('shown', 0)}, "
                  f"submitted {counts.get('submitted', 0)}, finished by you {counts.get('manual', 0)}, "
                  f"applied.csv rows {len(applied_rows())}.")

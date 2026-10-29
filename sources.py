@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from html import unescape
@@ -13,7 +14,7 @@ from store import canonical
 
 log = logging.getLogger(__name__)
 
-REPOS = ["SimplifyJobs/Summer2027-Internships", "vanshb03/Summer2027-Internships"]
+LIST_OWNERS = ["SimplifyJobs", "vanshb03"]  # each starts a Summer<year>-Internships repo every August
 MAX_AGE_DAYS = 7
 
 PROVINCES = "ON|QC|BC|AB|MB|SK|NS|NB|NL|PE|YT|NT|NU"
@@ -55,13 +56,23 @@ def _get_json(url, headers=None):
         return json.load(r)
 
 
+def repos(today=None):
+    """This year's and next year's lists, so the bot moves on to Summer2028 by itself when those repos appear."""
+    year = (today or datetime.now()).year
+    return [f"{owner}/Summer{y}-Internships" for owner in LIST_OWNERS for y in (year, year + 1)]
+
+
 def github_repos():
     """Community internship lists (SimplifyJobs listings.json format)."""
     cutoff = time.time() - MAX_AGE_DAYS * 86400
     jobs = []
-    for repo in REPOS:
+    for repo in repos():
         try:
             listings = _get_json(f"https://raw.githubusercontent.com/{repo}/dev/.github/scripts/listings.json")
+        except urllib.error.HTTPError as e:
+            if e.code != 404:  # 404: that year's list doesn't exist (yet, or any more)
+                log.warning("%s: %s", repo, e)
+            continue
         except Exception as e:  # one dead source shouldn't kill the digest
             log.warning("%s: %s", repo, e)
             continue
@@ -69,7 +80,8 @@ def github_repos():
             if x.get("active") and x.get("is_visible", True) and x.get("date_posted", 0) >= cutoff:
                 jobs.append(_job(repo.split("/")[0], x["company_name"], x["title"], x.get("locations", []),
                                  x["url"], x["date_posted"], x.get("sponsorship", "Other")))
-    return jobs
+    # Last year's repo can mirror this year's listings: one job per posting.
+    return list({(job["source"], job["id"]): job for job in jobs}.values())
 
 
 def jobspy_jobs(countries):

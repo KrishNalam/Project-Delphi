@@ -238,6 +238,26 @@ def test_answers_commands():
         apply.ANSWERS = saved_path
 
 
+def test_sources_roll_over_and_warn():
+    from datetime import datetime
+
+    import bot
+    import sources
+    assert sources.repos(datetime(2027, 9, 1)) == [
+        "SimplifyJobs/Summer2027-Internships", "SimplifyJobs/Summer2028-Internships",
+        "vanshb03/Summer2027-Internships", "vanshb03/Summer2028-Internships"]
+    store = {}
+    saved = bot.get_setting, bot.set_setting
+    bot.get_setting, bot.set_setting = (lambda k: store.get(k, {})), store.__setitem__
+    try:
+        assert bot.check_sources([job(), job()]) == []  # first run: nothing to compare with
+        assert bot.check_sources([dict(job(), source="linkedin")]) == [
+            "⚠️ test returned no jobs this time (it had 2 last time)."]
+        assert store["source_counts"] == {"linkedin": 1}
+    finally:
+        bot.get_setting, bot.set_setting = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
