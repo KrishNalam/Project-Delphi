@@ -393,6 +393,26 @@ def test_resume_variants():
         apply.PROFILE.update(saved)
 
 
+def test_due_slot():
+    from datetime import datetime
+
+    import bot
+    saved = bot.DIGEST_HOURS
+    bot.DIGEST_HOURS = [8, 17]
+    try:
+        at = lambda h: datetime(2026, 10, 29, h)  # noqa: E731
+        assert bot.due_slot(at(7), "") is None
+        assert bot.due_slot(at(8), "2026-10-28@17") == "2026-10-29@8"
+        assert bot.due_slot(at(12), "2026-10-29@8") is None
+        assert bot.due_slot(at(17), "2026-10-29@8") == "2026-10-29@17"
+        assert bot.due_slot(at(23), "2026-10-29@17") is None
+        assert bot.due_slot(at(20), "2026-10-28@17") == "2026-10-29@17"  # asleep all day: one catch-up, not two
+        assert bot.due_slot(at(9), "2026-10-29") is None  # last_digest from before slots: 8:00 already ran
+        assert bot.due_slot(at(17), "2026-10-29") == "2026-10-29@17"
+    finally:
+        bot.DIGEST_HOURS = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

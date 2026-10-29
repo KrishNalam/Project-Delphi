@@ -32,7 +32,7 @@ from store import (_key, already_applied, applied_rows, canonical, get_job, get_
 log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
 TZ = ZoneInfo(env("DELPHI_TZ", "America/Toronto"))
-DIGEST_HOUR = int(env("DIGEST_HOUR", "8"))
+DIGEST_HOURS = sorted(int(h) for h in env("DIGEST_HOUR", "8").split(",") if h.strip())  # e.g. "8" or "8,17"
 pending = None  # (kind, Future, tag) the application is waiting on: "text" reply, "confirm" or "stuck" tap
 apply_lock = asyncio.Lock()  # one application at a time so replies can't get crossed
 digest_lock = asyncio.Lock()  # /digest tapped during the daily one would show the same jobs twice
@@ -162,12 +162,25 @@ async def send_week(bot):
                                     Button("Drop it", callback_data=f"skip:{job['id']}")]]))
 
 
-failed_on = ""  # the day a scheduled digest last failed, so the retries that day don't each send an error
+failed_on = ""  # the digest slot that last failed, so its hourly retries don't each send an error
+
+
+def due_slot(now, last):
+    """The digest slot ("2026-10-29@17") to run now, or None: the latest DIGEST_HOURS hour that has passed today,
+    unless it already ran. A slot missed while the machine slept runs on the first tick after."""
+    today = now.date().isoformat()
+    passed = [h for h in DIGEST_HOURS if h <= now.hour]
+    if not passed:
+        return None
+    slot = f"{today}@{passed[-1]}"
+    # Before digest slots, last_digest held just the date: that's the day's first slot, done.
+    done = {last, f"{today}@{DIGEST_HOURS[0]}" if last == today else None}
+    return None if slot in done else slot
 
 
 async def tick(ctx):
-    """Hourly. Sends the day's digest once: at DIGEST_HOUR, or on the first tick after (machine was asleep).
-    A failed one (network down, API error) is retried on the next tick instead of skipping the day."""
+    """Hourly. Sends each digest slot once: at its DIGEST_HOUR, or on the first tick after (machine was asleep).
+    A failed one (network down, API error) is retried on the next tick instead of skipping it."""
     global failed_on
     now = datetime.now(TZ)
     today = now.date().isoformat()
@@ -177,12 +190,13 @@ async def tick(ctx):
             set_setting("last_weekly", today)
         except Exception:  # retried next hour; the digest check below still runs
             log.exception("weekly summary")
-    if get_setting("paused") or now.hour < DIGEST_HOUR or get_setting("last_digest") == today:
+    slot = due_slot(now, get_setting("last_digest"))
+    if get_setting("paused") or not slot:
         return
-    if await send_digest(ctx.application, quiet_failure=failed_on == today):
-        set_setting("last_digest", today)
+    if await send_digest(ctx.application, quiet_failure=failed_on == slot):
+        set_setting("last_digest", slot)
     else:
-        failed_on = today
+        failed_on = slot
 
 
 def parse_answers(text, n):
@@ -481,7 +495,8 @@ async def cmd_status(update, ctx):
     counts = status_counts()
     lines = [
         f"Up since {STARTED:%b %d %H:%M}. " + ("Paused." if get_setting("paused") else
-                                              f"Next digest {DIGEST_HOUR}:00 (last: {get_setting('last_digest') or 'never'})."),
+                                              f"Digests at {', '.join(f'{h}:00' for h in DIGEST_HOURS)} "
+                                              f"(last: {get_setting('last_digest').replace('@', ' at ') or 'never'})."),
         f"Searching {', '.join(get_setting('countries'))}, {get_setting('count')} jobs per digest, auto-apply "
         + ("off." if auto_min is None else f"at {auto_min}/10+."),
         f"Applying to: {running['title']} @ {running['company']}" + (" (waiting on you)" if pending else "")

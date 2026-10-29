@@ -44,8 +44,8 @@ journalctl --user -u delphi -f    # logs
 It starts on boot, restarts within a minute if it crashes, and keeps running after you log out. Re-run
 `./deploy.sh` after pulling changes.
 
-Nothing needs to stay open, but the machine has to be on. If it was asleep at `DIGEST_HOUR`, the
-digest goes out within an hour of waking up.
+Nothing needs to stay open, but the machine has to be on. `DIGEST_HOUR=8,17` sends two a day. If it was asleep
+at a digest hour, that digest goes out within an hour of waking up.
 
 ## Commands
 
