@@ -59,6 +59,7 @@ digest goes out within an hour of waking up.
 | `/auto 8`, `/auto off` | apply to digest picks scoring 8/10+ without a tap (sites the bot can fill only) |
 | `/status` | what it's doing now, queue, settings, counts |
 | `/answers`, `/answers 3 <text>`, `/forget 3` | see, change or delete the answers it reuses on forms |
+| `/block <company or word>`, `/unblock` | never show (or auto-apply to) a company, or titles with a word, e.g. `/block phd`. Digest jobs have a 🚫 Company button too |
 | `/applied` | latest rows of `applied.csv` |
 | `/cost` | Claude spend: last 30 days, average per digest and per application |
 

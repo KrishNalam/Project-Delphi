@@ -23,6 +23,18 @@ def keep(job, countries, needs_us_sponsorship=True):
     places = set(job["countries"])
     return ("canada" in places and ca_ok) or ("usa" in places and us_ok) or (None in places and (ca_ok or us_ok))
 
+def blocked(job, terms):
+    """The /block term that rules this job out: whole words of the company name ("amazon" covers Amazon Web
+    Services) or of the title ("phd"). Else None."""
+    company, title = (f" {block_term(job[k])} " for k in ("company", "title"))
+    return next((t for t in terms if f" {t} " in company or f" {t} " in title), None)
+
+
+def block_term(text):
+    """How /block stores what you typed: lowercase words, punctuation as spaces ("Ph.D" -> "ph d")."""
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
 # Words every internship title shares; they say nothing about fit.
 GENERIC = {"intern", "interns", "internship", "co", "op", "coop", "student", "summer", "fall", "winter", "spring",
            "and", "the", "of", "for", "to", "in", "with", "a", "an", "at", "on", "engineer", "engineering", "program",

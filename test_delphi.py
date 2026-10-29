@@ -258,6 +258,21 @@ def test_sources_roll_over_and_warn():
         bot.get_setting, bot.set_setting = saved
 
 
+def test_blocked():
+    from filters import block_term, blocked
+    terms = [block_term(t) for t in ["Amazon", "PhD", "Ph.D", "Machine Learning"]]
+    assert terms == ["amazon", "phd", "ph d", "machine learning"]
+    assert blocked(_job("t", "Amazon", "SDE Intern", [], "u"), terms) == "amazon"
+    assert blocked(_job("t", "Acme", "Research Intern (PhD)", [], "u"), terms) == "phd"
+    assert blocked(_job("t", "Acme", "Ph.D. Research Intern", [], "u"), terms) == "ph d"
+    assert blocked(_job("t", "Acme", "Machine Learning Intern", [], "u"), terms) == "machine learning"
+    assert blocked(_job("t", "Amazon Web Services", "Intern", [], "u"), terms) == "amazon"
+    # Whole words only, and a phrase can't run from the company into the title.
+    assert blocked(_job("t", "Metamorph", "Intern", [], "u"), ["meta"]) is None
+    assert blocked(_job("t", "Acme", "Graphdb Intern", [], "u"), ["phd"]) is None
+    assert blocked(_job("t", "Machine", "Learning Intern", [], "u"), ["machine learning"]) is None
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

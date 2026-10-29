@@ -23,7 +23,7 @@ import llm
 import sources
 import workday
 from config import PROFILE, ROOT, env
-from filters import keep, relevance, words
+from filters import block_term, blocked, keep, relevance, words
 from store import (_key, already_applied, applied_rows, canonical, get_job, get_setting, is_new, log_application,
                    save_job, set_setting, set_status, status_counts, update_job)
 
@@ -63,13 +63,14 @@ def find_jobs():
     countries = get_setting("countries")
     found = sources.github_repos() + sources.jobspy_jobs(countries) + sources.canvas_jobs()
     source_warnings[:] = check_sources(found)
-    fresh = {}
+    fresh, blocks = {}, get_setting("blocked")
     for job in found:
         # Only jobs already shown are skipped, so unpicked or filtered-out ones get another look later.
         if not is_new(job["id"]):
             continue
         save_job(job)
-        if keep(job, countries, PROFILE.get("needs_us_sponsorship", True)) and not already_applied(job):
+        if (keep(job, countries, PROFILE.get("needs_us_sponsorship", True)) and not blocked(job, blocks)
+                and not already_applied(job)):
             fresh[job["id"]] = job
     # Only 60 keyword matches (newest first on ties) go to Claude, to keep ranking cheap. Same role posted
     # twice counts once, keeping the company's own link over LinkedIn's (which the bot can't apply through).
@@ -121,8 +122,10 @@ async def send_digest(app, quiet_failure=False):
                 f"<b>{escape(job['title'])}</b>\n{escape(job['company'])} · {escape('; '.join(job['locations']))}\n"
                 f"{job['score']}/10 · {escape(job['why'])}\n<a href=\"{escape(job['url'])}\">Open posting</a> · {how}",
                 parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=None if job in auto else Keyboard([[Button("Apply", callback_data=f"apply:{job['id']}"),
-                                                                 Button("Skip", callback_data=f"skip:{job['id']}")]]))
+                reply_markup=None if job in auto else Keyboard([[
+                    Button("Apply", callback_data=f"apply:{job['id']}"),
+                    Button("Skip", callback_data=f"skip:{job['id']}"),
+                    Button("🚫 Company", callback_data=f"block:{job['id']}")]]))
         except Exception:  # Telegram down: the job stays new, so the hourly retry offers it again
             log.exception("sending %s", job["url"])
             sent_all = False
@@ -453,6 +456,27 @@ async def cmd_forget(update, ctx):
     await update.message.reply_text(f"Forgot: {label[:120]}\nI'll ask again next time a form has it.")
 
 
+async def cmd_block(update, ctx):
+    terms = get_setting("blocked")
+    if term := block_term(" ".join(ctx.args or [])):
+        terms = sorted(set(terms) | {term})
+        set_setting("blocked", terms)
+        await update.message.reply_text(f"Blocked '{term}': jobs from that company or with it in the title won't "
+                                        f"be shown or applied to. /unblock {term} to undo.")
+        return
+    await update.message.reply_text("Blocked: " + ", ".join(terms) + "\n/unblock <term> to remove one." if terms else
+                                    "Nothing blocked. /block <company or title word>, e.g. /block phd")
+
+
+async def cmd_unblock(update, ctx):
+    term, terms = block_term(" ".join(ctx.args or [])), get_setting("blocked")
+    if term not in terms:
+        await update.message.reply_text("Not blocked. /block lists what is.")
+        return
+    set_setting("blocked", [t for t in terms if t != term])
+    await update.message.reply_text(f"Unblocked '{term}'.")
+
+
 async def cmd_cost(update, ctx):
     await update.message.reply_text(llm.usage_summary())
 
@@ -506,6 +530,12 @@ async def on_button(update, ctx):
     if action == "skip":
         await q.edit_message_reply_markup(None)
         set_status(arg, "skipped")
+    elif action == "block":
+        await q.edit_message_reply_markup(None)
+        set_status(arg, "skipped")
+        term = block_term(job["company"])
+        set_setting("blocked", sorted(set(get_setting("blocked")) | {term}))
+        await q.message.reply_text(f"I won't show {job['company']} again. /unblock {term} to undo.")
     elif action == "done":
         await q.edit_message_reply_markup(None)
         if row := already_applied(job):  # e.g. the bot's own submit went through after all
@@ -597,7 +627,7 @@ def main():
     for name, fn in [("country", cmd_country), ("count", cmd_count), ("pause", cmd_pause),
                      ("resume", cmd_resume), ("applied", cmd_applied), ("cost", cmd_cost),
                      ("apply", cmd_apply), ("auto", cmd_auto), ("status", cmd_status), ("answers", cmd_answers),
-                     ("forget", cmd_forget)]:
+                     ("forget", cmd_forget), ("block", cmd_block), ("unblock", cmd_unblock)]:
         app.add_handler(CommandHandler(name, fn, me))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))
