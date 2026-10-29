@@ -184,7 +184,7 @@ def map_fields(job, fields, answers, posting=""):
         "map_fields",
         f"Job: {job['title']} at {job['company']}.\n\n"
         + (f"Job posting:\n{posting[:6000]}\n\n" if posting else "")
-        + f"Form fields: {json.dumps([{k: f[k] for k in keep if k == "index" or f.get(k)} for f in fields])}",
+        + f"Form fields: {json.dumps([{k: f[k] for k in keep if k == 'index' or f.get(k)} for f in fields])}",
         FormPlan, cached=_applicant(answers))
 
 

@@ -313,7 +313,7 @@ async def _run_apply(job, bot):
             return await _buttons(bot, "stuck", png, "form.png",
                                   f"{reason}.\n\nThe browser is still open on your computer, finish it there."
                                   + watch_hint(), ("I applied ✅", "Close browser"))
-        except TimeoutError:  # no tap for hours: close it and move on to the next application
+        except asyncio.TimeoutError:  # no tap for hours: close it and move on to the next application
             await bot.send_message(CHAT_ID, f"Closed the browser for {job['company']}. Finish it here if you want: "
                                             f"{job['url']}", reply_markup=done_button)
             return False
