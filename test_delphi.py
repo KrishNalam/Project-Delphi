@@ -59,6 +59,12 @@ def test_canonical():
     for url in [base, base + "/", base + "/application", base + "/application?embed=true", base + "?src=x"]:
         assert canonical(url) == base, url
     assert canonical("https://jobs.lever.co/x/123/apply") == "https://jobs.lever.co/x/123"
+    # Embedded Greenhouse jobs differ only by their id parameter: they must stay different postings.
+    assert canonical("https://boards.greenhouse.io/embed/job_app?token=1") != \
+        canonical("https://boards.greenhouse.io/embed/job_app?token=2")
+    assert canonical("https://x.com/jobs?gh_jid=5&utm_source=li") == "https://x.com/jobs?gh_jid=5"
+    assert _job("t", "A", "B", [], "https://x.com/jobs?gh_jid=1")["id"] != \
+        _job("t", "A", "B", [], "https://x.com/jobs?gh_jid=2")["id"]
 
 
 def test_already_applied():
@@ -199,6 +205,37 @@ def test_auto_apply_picks():
     assert started == ["A Intern"], started
     assert sent == [("A Intern", False, "auto-applying"), ("B Intern", True, "auto-fill"),
                     ("C Intern", True, "fill it yourself")], sent
+
+
+def test_answers_commands():
+    import asyncio
+
+    import apply
+    import bot
+    saved_path = apply.ANSWERS
+    apply.ANSWERS = Path(tempfile.mkdtemp()) / "answers.json"
+    replies = []
+
+    class Update:
+        class message:  # noqa: N801
+            async def reply_text(text):
+                replies.append(text)
+
+    def run(fn, *args):
+        asyncio.run(fn(Update, type("Ctx", (), {"args": list(args)})))
+        return replies[-1]
+    try:
+        assert "No saved answers" in run(bot.cmd_answers)
+        apply.save_answers({"Pronouns": "she/her", "Earliest start date?": "May 2027"})
+        assert "1. Pronouns → she/her\n2. Earliest start date? → May 2027" in run(bot.cmd_answers)
+        assert run(bot.cmd_answers, "2", "September", "2027") == "Changed: 2. Earliest start date? → September 2027"
+        assert "Forgot: Pronouns" in run(bot.cmd_forget, "1")
+        assert "no answer 5" in run(bot.cmd_answers, "5", "x")
+        assert "/forget <number>" in run(bot.cmd_forget, "9")
+        # A form that was open during /forget saves only its new answers, not its stale copy of the file.
+        assert apply.save_answers({"GPA": "3.9"}) == {"Earliest start date?": "September 2027", "GPA": "3.9"}
+    finally:
+        apply.ANSWERS = saved_path
 
 
 if __name__ == "__main__":

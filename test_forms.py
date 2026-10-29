@@ -125,7 +125,7 @@ def test_bot_flow():
     apply.ANSWERS = tmp / "answers.json"
     apply.SUPPORTED = apply.re.compile(r"^file:")
     llm.map_fields = lambda job, fields, answers: llm.FormPlan(fills=[], unknown=[])
-    sent = []
+    sent, stale, cleared = [], [], []
 
     class FakeBot:
         async def send_message(self, chat, text, **kw):
@@ -136,12 +136,20 @@ def test_bot_flow():
             elif "needs a few answers" in text or text.startswith("Acme"):
                 asyncio.get_running_loop().call_later(0.1, bot._answer, "text", "Yes, 04/30/2028, She/her")
 
-        async def send_document(self, chat, png, caption="", **kw):
+        async def send_document(self, chat, png, caption="", reply_markup=None, **kw):
             sent.append(caption)
-            if caption.startswith("Submit this?"):
-                asyncio.get_running_loop().call_later(0.1, bot._answer, "confirm", True)
-            else:
+            if not caption.startswith("Submit this?"):
                 raise AssertionError(caption)
+            kind, tag, _ = reply_markup.inline_keyboard[0][0].callback_data.split(":")
+            loop = asyncio.get_running_loop()
+            # A tap on an older message's Submit (another tag) must not count; the real one does.
+            loop.call_later(0.05, lambda: stale.append(bot._answer(kind, True, "0ld0ld00")))
+            loop.call_later(0.1, bot._answer, kind, True, tag)
+
+            class Message:
+                async def edit_reply_markup(self, markup):
+                    cleared.append(markup)
+            return Message()
 
     jobs = []
     for i, title in enumerate(["SWE Intern", "Data Intern"]):
@@ -157,6 +165,7 @@ def test_bot_flow():
                                                               "Submitted ✅ Data Intern @ Acme"], sent
     assert [r["title"] for r in store.applied_rows()] == ["SWE Intern", "Data Intern"]
     assert bot.running is None and bot.queued == 0 and not bot.apply_lock.locked()
+    assert stale == [False, False] and cleared == [None, None]  # stale taps ignored, buttons removed after use
 
 
 if __name__ == "__main__":

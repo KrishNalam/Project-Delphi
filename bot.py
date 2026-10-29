@@ -1,8 +1,10 @@
 """Telegram bot and daily digest. Run: python bot.py"""
 import asyncio
+import contextlib
 import logging
 import atexit
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -29,7 +31,7 @@ log = logging.getLogger("delphi")
 CHAT_ID = int(env("TELEGRAM_CHAT_ID", "0"))
 TZ = ZoneInfo(env("DELPHI_TZ", "America/Toronto"))
 DIGEST_HOUR = int(env("DIGEST_HOUR", "8"))
-pending = None  # (kind, Future) the running application is waiting on: "text" reply or "confirm" tap
+pending = None  # (kind, Future, tag) the application is waiting on: "text" reply, "confirm" or "stuck" tap
 apply_lock = asyncio.Lock()  # one application at a time so replies can't get crossed
 digest_lock = asyncio.Lock()  # /digest tapped during the daily one would show the same jobs twice
 running = None  # the job being applied to, for /status
@@ -71,7 +73,6 @@ def find_jobs():
         # Follow short links now, so the digest can say whether the bot can fill the form and dedupe by real URL.
         job["url"] = apply.direct_url(final_url(job["url"]))
         update_job({k: v for k, v in job.items() if k not in ("score", "why")})
-        set_status(job["id"], "shown")
         if canonical(job["url"]) not in urls and not already_applied(job):
             urls.add(canonical(job["url"]))
             picks.append(job)
@@ -93,18 +94,25 @@ async def send_digest(app, quiet_failure=False):
         await app.bot.send_message(CHAT_ID, "No new matches today.")
     auto_min = get_setting("auto_min")
     auto = [j for j in jobs if auto_min is not None and j["score"] >= auto_min and fillable(j["url"])]
+    sent_all = True
     for job in jobs:
         how = "auto-applying" if job in auto else "auto-fill" if fillable(job["url"]) else "fill it yourself"
-        await app.bot.send_message(
-            CHAT_ID,
-            f"<b>{escape(job['title'])}</b>\n{escape(job['company'])} · {escape('; '.join(job['locations']))}\n"
-            f"{job['score']}/10 · {escape(job['why'])}\n<a href=\"{escape(job['url'])}\">Open posting</a> · {how}",
-            parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=None if job in auto else Keyboard([[Button("Apply", callback_data=f"apply:{job['id']}"),
-                                                             Button("Skip", callback_data=f"skip:{job['id']}")]]))
-    for job in auto:  # one at a time, in score order (apply_lock queues them)
-        app.create_task(run_apply(job, app.bot))
-    return True
+        try:
+            await app.bot.send_message(
+                CHAT_ID,
+                f"<b>{escape(job['title'])}</b>\n{escape(job['company'])} · {escape('; '.join(job['locations']))}\n"
+                f"{job['score']}/10 · {escape(job['why'])}\n<a href=\"{escape(job['url'])}\">Open posting</a> · {how}",
+                parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=None if job in auto else Keyboard([[Button("Apply", callback_data=f"apply:{job['id']}"),
+                                                                 Button("Skip", callback_data=f"skip:{job['id']}")]]))
+        except Exception:  # Telegram down: the job stays new, so the hourly retry offers it again
+            log.exception("sending %s", job["url"])
+            sent_all = False
+            continue
+        set_status(job["id"], "shown")
+        if job in auto:  # one at a time, in score order (apply_lock queues them)
+            app.create_task(run_apply(job, app.bot))
+    return sent_all
 
 
 failed_on = ""  # the day a scheduled digest last failed, so the retries that day don't each send an error
@@ -137,21 +145,39 @@ def parse_answers(text, n):
     return lines if len(lines) == n else None
 
 
-async def _wait(kind):
+async def _wait(kind, tag=None):
+    """The reply or tap the running application needs. A tap must carry `tag`, so a button on an older message
+    (a "Submit this?" that timed out) can't answer for the application now waiting."""
     global pending
-    pending = (kind, asyncio.get_running_loop().create_future())
+    pending = (kind, asyncio.get_running_loop().create_future(), tag)
     try:
         return await asyncio.wait_for(pending[1], timeout=6 * 3600)
     finally:
         pending = None
 
 
-def _answer(kind, value):
-    """Hand a reply or tap to the application waiting for one. False if none is waiting for this kind."""
-    if pending and pending[0] == kind and not pending[1].done():  # a second quick reply finds it already answered
+def _answer(kind, value, tag=None):
+    """Hand a reply or tap to the application waiting for one. False if none is waiting for this kind (and tag)."""
+    # A second quick reply finds it already answered.
+    if pending and pending[0] == kind and pending[2] == tag and not pending[1].done():
         pending[1].set_result(value)
         return True
     return False
+
+
+async def _buttons(bot, kind, png, filename, caption, labels):
+    """Send a screenshot with two buttons and wait for a tap: True for the first. The buttons are removed afterwards,
+    answered or not, so they can't be tapped later."""
+    tag = secrets.token_hex(4)
+    message = await bot.send_document(
+        CHAT_ID, png, filename=filename, caption=caption[:1024],
+        reply_markup=Keyboard([[Button(labels[0], callback_data=f"{kind}:{tag}:yes"),
+                                Button(labels[1], callback_data=f"{kind}:{tag}:no")]]))
+    try:
+        return await _wait(kind, tag)
+    finally:
+        with contextlib.suppress(Exception):
+            await message.edit_reply_markup(None)
 
 
 def final_url(url):
@@ -216,11 +242,8 @@ async def _run_apply(job, bot):
     async def confirm(png):
         if env("CONFIRM_BEFORE_SUBMIT", "1") != "1":
             return True
-        await bot.send_document(
-            CHAT_ID, png, filename="application.png", caption="Submit this?" + watch_hint(),
-            reply_markup=Keyboard([[Button("Submit", callback_data="confirm:yes"),
-                                    Button("Cancel", callback_data="confirm:no")]]))
-        return await _wait("confirm")
+        return await _buttons(bot, "confirm", png, "application.png", "Submit this?" + watch_hint(),
+                              ("Submit", "Cancel"))
 
     done_button = Keyboard([[Button("I applied ✅", callback_data=f"done:{job['id']}")]])
 
@@ -231,13 +254,14 @@ async def _run_apply(job, bot):
                                     reply_markup=done_button)
             return False
         # Watching mode: the browser stays open on your computer until you tap a button.
-        await bot.send_document(
-            CHAT_ID, png, filename="form.png",
-            caption=(f"{reason}.\n\nThe browser is still open on your computer, finish it there."
-                     + watch_hint())[:1024],
-            reply_markup=Keyboard([[Button("I applied ✅", callback_data="stuck:yes"),
-                                    Button("Close browser", callback_data="stuck:no")]]))
-        return await _wait("stuck")
+        try:
+            return await _buttons(bot, "stuck", png, "form.png",
+                                  f"{reason}.\n\nThe browser is still open on your computer, finish it there."
+                                  + watch_hint(), ("I applied ✅", "Close browser"))
+        except TimeoutError:  # no tap for hours: close it and move on to the next application
+            await bot.send_message(CHAT_ID, f"Closed the browser for {job['company']}. Finish it here if you want: "
+                                            f"{job['url']}", reply_markup=done_button)
+            return False
 
     error = ""
     try:
@@ -365,6 +389,50 @@ async def cmd_status(update, ctx):
     await update.message.reply_text("\n".join(lines))
 
 
+def _answer_lines():
+    return [f"{i}. {label[:90]} → {answer[:80]}" for i, (label, answer) in enumerate(apply.load_answers().items(), 1)]
+
+
+async def _reply_long(update, text):
+    """Telegram caps a message at 4096 characters: send long lists in pieces, split between lines."""
+    chunk = ""
+    for line in text.split("\n"):
+        if len(chunk) + len(line) > 4000:
+            await update.message.reply_text(chunk)
+            chunk = ""
+        chunk += line + "\n"
+    await update.message.reply_text(chunk)
+
+
+async def cmd_answers(update, ctx):
+    """/answers lists what the bot reuses on forms; /answers 3 <text> changes one."""
+    labels = list(apply.load_answers())
+    if ctx.args and ctx.args[0].isdigit() and len(ctx.args) > 1:
+        n = int(ctx.args[0])
+        if not 1 <= n <= len(labels):
+            await update.message.reply_text(f"There's no answer {n}. /answers lists them.")
+            return
+        apply.save_answers({labels[n - 1]: " ".join(ctx.args[1:])})
+        await update.message.reply_text(f"Changed: {_answer_lines()[n - 1]}")
+        return
+    lines = _answer_lines()
+    if not lines:
+        await update.message.reply_text("No saved answers yet. They build up as you answer questions on forms.")
+        return
+    await _reply_long(update, "Saved answers (reused on every form):\n" + "\n".join(lines)
+                      + "\n\nChange one: /answers 3 <new answer>. Delete one: /forget 3")
+
+
+async def cmd_forget(update, ctx):
+    labels = list(apply.load_answers())
+    if not (ctx.args and ctx.args[0].isdigit() and 1 <= int(ctx.args[0]) <= len(labels)):
+        await update.message.reply_text("Send /forget <number> from /answers.")
+        return
+    label = labels[int(ctx.args[0]) - 1]
+    apply.save_answers({}, drop=[label])
+    await update.message.reply_text(f"Forgot: {label[:120]}\nI'll ask again next time a form has it.")
+
+
 async def cmd_cost(update, ctx):
     await update.message.reply_text(llm.usage_summary())
 
@@ -407,7 +475,9 @@ async def on_button(update, ctx):
         return
     action, _, arg = q.data.partition(":")
     if action in ("confirm", "stuck"):
-        _answer(action, arg == "yes")
+        tag, _, choice = arg.partition(":")
+        if not _answer(action, choice == "yes", tag):
+            await q.message.reply_text("That one's no longer waiting on you.")
         await q.edit_message_reply_markup(None)
         return
     job = get_job(arg)
@@ -506,7 +576,8 @@ def main():
     app.add_handler(CommandHandler("digest", cmd_digest, me))
     for name, fn in [("country", cmd_country), ("count", cmd_count), ("pause", cmd_pause),
                      ("resume", cmd_resume), ("applied", cmd_applied), ("cost", cmd_cost),
-                     ("apply", cmd_apply), ("auto", cmd_auto), ("status", cmd_status)]:
+                     ("apply", cmd_apply), ("auto", cmd_auto), ("status", cmd_status), ("answers", cmd_answers),
+                     ("forget", cmd_forget)]:
         app.add_handler(CommandHandler(name, fn, me))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(me & filters.TEXT & ~filters.COMMAND, on_text))

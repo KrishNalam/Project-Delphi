@@ -171,13 +171,30 @@ async def embedded_form(url):
         page = await browser.new_page()
         try:
             await settle(page, url)
-            links = await page.evaluate("() => [...document.querySelectorAll('iframe[src], a[href]')]"
-                                        ".map(e => e.src || e.href)")
+            # The form itself (an iframe), or a link that says Apply. Not any job link: a "featured jobs" list
+            # with one entry would send the application to the wrong posting.
+            links = await page.evaluate("""() => [...document.querySelectorAll('iframe[src]')].map(e => e.src)
+              .concat([...document.querySelectorAll('a[href]')].filter(a => /apply/i.test(a.innerText))
+                .map(a => a.href))""")
         except Exception as e:
             log.warning("looking for a form on %s: %s", url, e)
             return None
     forms = {direct_url(link).split("#")[0] for link in links if FORM_LINK.search(direct_url(link))}
     return forms.pop() if len(forms) == 1 else None  # several = a list of jobs, not this one
+
+
+def load_answers():
+    return json.loads(ANSWERS.read_text()) if ANSWERS.exists() else {}
+
+
+def save_answers(changes, drop=()):
+    """Merge into answers.json as it is now, not as it was when the form opened (/forget may have run since)."""
+    answers = load_answers()
+    answers.update(changes)
+    for label in drop:
+        answers.pop(label, None)
+    ANSWERS.write_text(json.dumps(answers, indent=1))
+    return answers
 
 
 def resume_path():
@@ -237,6 +254,16 @@ OPTIONS = "[role=option], [data-automation-id=promptOption]"
 MAX_OPTIONS = 60  # longer lists (countries, schools) are search boxes: the value gets typed and matched instead
 
 
+async def _menu(page, el):
+    """The visible choices of the combobox `el`: its own popup when it names one (aria-controls), else any on the page."""
+    ids = ((await el.get_attribute("aria-controls")) or (await el.get_attribute("aria-owns")) or "").split()
+    if ids:
+        own = page.locator(", ".join(f'[id="{i}"] :is({OPTIONS})' for i in ids)).filter(visible=True)
+        if await own.count():
+            return own
+    return page.locator(OPTIONS).filter(visible=True)
+
+
 async def read_fields(page):
     """Every fillable field on the page. Dropdowns get opened once to read their options: Workday's buttons, and
     other sites' empty comboboxes (react-select shows its choices only when opened)."""
@@ -246,8 +273,8 @@ async def read_fields(page):
             el = page.locator(f'[data-delphi="{f["index"]}"]')
             try:
                 await el.click(timeout=3000)
-                options = page.locator(OPTIONS).filter(visible=True)
-                await options.first.wait_for(timeout=1500)
+                await page.locator(OPTIONS).filter(visible=True).first.wait_for(timeout=1500)
+                options = await _menu(page, el)
                 texts = [o.strip() for o in await options.all_inner_texts() if o.strip()]
                 if len(texts) <= MAX_OPTIONS:
                     f["options"] = texts
@@ -284,17 +311,18 @@ async def _fill(page, field, value):
         # An exact match wins, so "No" doesn't pick "Not applicable".
         await el.click()
         await el.fill(value)
-        options = page.locator(OPTIONS).filter(visible=True)
-        exact = options.filter(has_text=re.compile(rf"^\s*{re.escape(value.strip())}\s*$", re.I))
-        option = options.filter(has_text=re.compile(re.escape(value.strip()[:30]), re.I))
         if not field.get("workday"):  # Workday's prompts only search on Enter
             with contextlib.suppress(Exception):
-                await options.first.wait_for(timeout=4000)
+                await page.locator(OPTIONS).filter(visible=True).first.wait_for(timeout=4000)
+        options = await _menu(page, el)
+        exact = options.filter(has_text=re.compile(rf"^\s*{re.escape(value.strip())}\s*$", re.I))
+        option = options.filter(has_text=re.compile(re.escape(value.strip()[:30]), re.I))
         try:
             await (exact if await exact.count() else option).first.click(timeout=4000)
         except Exception:
-            # Enter with no list open would submit the whole form, so only when there's a list (or on Workday).
-            if not (field.get("workday") or await options.count()):
+            # Enter picks the top suggestion of a search box (a city). Not when the choices were known up front and
+            # none matched (it'd pick an arbitrary one), nor with no list open (it'd submit the whole form).
+            if field["options"] or not (field.get("workday") or await options.count()):
                 raise
             await el.press("Enter")
             with contextlib.suppress(Exception):
@@ -409,11 +437,12 @@ async def _fill_fields(page, job, ask, fields, todo, answers):
         unknown += [i for i in asked if (fields[i]["required"] or _lone_box(fields[i]))
                     and i not in values and i not in unknown]
     if unknown:
+        new = {}
         for i, reply in zip(unknown, await ask([_question(fields[i]) for i in unknown]), strict=True):
             values[i] = reply
             if fields[i]["label"]:  # saved for next time under its question; an unlabelled one has none
-                answers[fields[i]["label"]] = reply
-        ANSWERS.write_text(json.dumps(answers, indent=1))
+                new[fields[i]["label"]] = reply
+        answers.update(save_answers(new))
     for i, value in values.items():
         try:
             await _fill(page, fields[i], value)
@@ -426,7 +455,7 @@ async def fill_form(page, job, ask, resume=None):
 
     `resume` goes in the page's resume upload, if any.
     """
-    answers = json.loads(ANSWERS.read_text()) if ANSWERS.exists() else {}
+    answers = load_answers()
     fields = await read_fields(page)
     if not fields:  # single-page apps (Ashby) can draw the form a few seconds after the page says it has loaded
         with contextlib.suppress(Exception):
@@ -477,17 +506,21 @@ async def _submit(page):
     await page.wait_for_timeout(6000)
 
 
-async def _verify_email(page, ask):
+async def _verify_email(page, ask, before):
     """If the site emailed a code to confirm the application, ask for it, type it in and submit again.
-    The code goes in one box, or one character per box. False if no code was asked for."""
+    The code goes in one box, or one character per box. False if no code was asked for. `before` is the labels the
+    form had before Submit: only boxes that appeared since count (else a rejected form could be submitted twice)."""
     boxes = [f for f in await read_fields(page)
-             if f["type"] in ("text", "tel", "number") and CODE.search(f"{f['label']} {f['placeholder']}")]
+             if f["type"] in ("text", "tel", "number") and f["label"] not in before
+             and CODE.search(f"{f['label']} {f['placeholder']}")]
     if not boxes:
         return False
     host = re.sub(r"^www\.", "", re.sub(r"^https?://([^/]+).*", r"\1", page.url))
     (code,) = await ask([f"{host} emailed a verification code to {PROFILE.get('email', 'your email')}. "
                          "Reply with the code."])
     code = re.sub(r"\s+", "", code)
+    if len(boxes) > 1 and len(code) != len(boxes):
+        raise RuntimeError(f"the code has {len(code)} characters but the page has {len(boxes)} boxes for it")
     parts = [code] if len(boxes) == 1 else list(code)
     for box, part in zip(boxes, parts):
         await page.locator(f'[data-delphi="{box["index"]}"]').fill(part)
@@ -507,14 +540,14 @@ async def apply(job, ask, confirm, stuck):
     async with async_playwright() as p:
         page = await open_page(p, apply_url(job["url"]))
         try:
-            if not await fill_form(page, job, ask, resume):
+            if not (fields := await fill_form(page, job, ask, resume)):
                 raise RuntimeError("found no form fields on the page")
             if not await confirm(await page.screenshot(full_page=True)):
                 return "cancelled"
             await _submit(page)
             if SUCCESS.search(await page.inner_text("body")):
                 return "submitted"
-            if await _verify_email(page, ask) and SUCCESS.search(await page.inner_text("body")):
+            if await _verify_email(page, ask, {f["label"] for f in fields}) and SUCCESS.search(await page.inner_text("body")):
                 return "submitted"
             reason = "I clicked submit but couldn't confirm it went through (often a CAPTCHA or a rejected field)"
         except TimeoutError:  # a question or the Submit check went unanswered for hours (asyncio's, not Playwright's)

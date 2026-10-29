@@ -15,7 +15,8 @@ if ! .venv/bin/python bot.py --check; then
 fi
 
 mkdir -p ~/.config/systemd/user
-sed "s|%h/Projects/Delphi|$DIR|g" delphi.service > ~/.config/systemd/user/delphi.service
+.venv/bin/python -c 'import sys; print(open("delphi.service").read().replace("%h/Projects/Delphi", sys.argv[1]), end="")' \
+    "$DIR" > ~/.config/systemd/user/delphi.service
 systemctl --user daemon-reload
 systemctl --user enable delphi >/dev/null
 systemctl --user restart delphi

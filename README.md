@@ -58,6 +58,7 @@ digest goes out within an hour of waking up.
 | `/apply <link>` | apply to any posting, e.g. one you found yourself or want to redo |
 | `/auto 8`, `/auto off` | apply to digest picks scoring 8/10+ without a tap (sites the bot can fill only) |
 | `/status` | what it's doing now, queue, settings, counts |
+| `/answers`, `/answers 3 <text>`, `/forget 3` | see, change or delete the answers it reuses on forms |
 | `/applied` | latest rows of `applied.csv` |
 | `/cost` | Claude spend: last 30 days, average per digest and per application |
 
@@ -94,7 +95,7 @@ answers, and the profile + resume part of that prompt is cached.
 ## Answers
 
 Anything you answer is saved in `answers.json` under the question's label and reused on later
-forms. Edit it freely.
+forms. Fix a wrong one from Telegram with `/answers` and `/forget`, or edit the file.
 
 ## Limits
 

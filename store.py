@@ -72,9 +72,16 @@ CSV_FIELDS = ["date", "company", "title", "location", "url", "source", "status"]
 DONE = {"submitted", "manual"}
 
 
+# Query parameters that name the job itself (Greenhouse embeds: ?gh_jid=, ?token=), unlike tracking ones (?src=).
+JOB_PARAMS = re.compile(r"^(gh_jid|token|jobid|job_id|jid|jk|reqid|requisitionid)=", re.I)
+
+
 def canonical(url):
-    """One posting, many links: drop the query string and a trailing /apply or /application."""
-    return re.sub(r"/(apply|application)$", "", url.split("?")[0].rstrip("/"))
+    """One posting, many links: drop tracking parameters and a trailing /apply or /application."""
+    base, _, query = url.partition("?")
+    keep = sorted(p for p in query.split("&") if JOB_PARAMS.match(p))
+    base = re.sub(r"/(apply|application)$", "", base.rstrip("/"))
+    return base + ("?" + "&".join(keep) if keep else "")
 
 
 def _key(company, title):
