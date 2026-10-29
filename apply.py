@@ -434,12 +434,13 @@ async def fill_form(page, job, ask, resume=None):
             await page.wait_for_timeout(1000)  # the rest of the form renders with it
         fields = await read_fields(page)
     first, seen = fields, set()
+    workday = bool(re.search(r"\.myworkday(jobs|site)\.com/", page.url))
     for attempt in range(3):  # an answer can reveal a follow-up question (e.g. a referrer's name), so look again
         # Workday's prefilled values come from your resume and saved drafts, so they stay. Elsewhere a value there on
         # arrival is the site's guess (Workable puts the server's geo-IP city in Address), so it gets overwritten;
         # on later looks, filled means we filled it.
         todo = [f for f in fields if (f["label"], f["type"]) not in seen
-                and not (f["filled"] and (f["workday"] or attempt))]
+                and not (f["filled"] and (workday or attempt))]
         if not todo:
             break
         seen |= {(f["label"], f["type"]) for f in todo}
