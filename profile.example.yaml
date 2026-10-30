@@ -19,6 +19,8 @@ work_auth:
     canada: Authorized to work, no sponsorship needed
     usa: Requires visa sponsorship
 needs_us_sponsorship: true # drops US postings that say they won't sponsor
+degree_level: Bachelor's # drops postings that list only other degrees (e.g. PhD-only); blank = keep all
+terms: [Summer 2027] # drops postings that list only other terms (Winter 2027, ...); blank = keep all
 
 search_terms: # LinkedIn / Indeed searches
     - software engineering intern
@@ -38,6 +40,13 @@ experience:
 skills: [Python, Java, SQL]
 
 resume_pdf: /home/krish/resume.pdf
+transcript_pdf: # optional, uploaded where a form asks for a transcript
+# Optional other versions of your resume: the first whose keyword is a word in the job title is used instead.
+# resumes:
+#     - pdf: /home/krish/resume-ml.pdf
+#       keywords: [machine learning, ml, ai, data science]
+#     - pdf: /home/krish/resume-hardware.pdf
+#       keywords: [hardware, embedded, firmware, fpga]
 
 # Voluntary self-identification. Blank = "decline to answer".
 eeo:

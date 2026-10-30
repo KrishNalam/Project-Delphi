@@ -6,7 +6,8 @@ Wants=network-online.target
 [Service]
 WorkingDirectory=%h/Projects/Delphi
 ExecStart=%h/Projects/Delphi/.venv/bin/python bot.py
-Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+Restart=always
 RestartSec=60
 
 [Install]

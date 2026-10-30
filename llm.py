@@ -65,6 +65,14 @@ def _ask(kind, prompt, schema, model=MODEL, effort=None, cached=""):
     return r.parsed_output
 
 
+def spend_since(days, path=None):
+    """Dollars spent on Claude in the last `days` days."""
+    path = path or USAGE_CSV
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = list(csv.DictReader(open(path, newline=""))) if path.exists() else []
+    return sum(float(r["cost"]) for r in rows if r["time"] >= since)
+
+
 def usage_summary(path=USAGE_CSV):
     """Average and total spend per kind of call, for /cost."""
     rows = list(csv.DictReader(open(path, newline=""))) if path.exists() else []
@@ -73,7 +81,8 @@ def usage_summary(path=USAGE_CSV):
     month_ago = (datetime.now() - timedelta(days=30)).isoformat()
     lines = [f"Last 30 days: ${sum(float(r['cost']) for r in rows if r['time'] >= month_ago):.2f}  "
              f"(all time ${sum(float(r['cost']) for r in rows):.2f}, {len(rows)} calls)"]
-    for kind, name in [("rank", "Daily digest"), ("map_fields", "Per form page"), ("extract", "Quercus scan")]:
+    for kind, name in [("rank", "Daily digest"), ("map_fields", "Per form page"), ("cover_letter", "Cover letter"),
+                       ("extract", "Quercus scan")]:
         costs = [float(r["cost"]) for r in rows if r["kind"] == kind]
         if costs:
             lines.append(f"{name}: avg ${sum(costs) / len(costs):.4f} over {len(costs)}")
@@ -104,7 +113,9 @@ def rank(jobs, n):
         f"Below are internship postings. Pick the {n} this candidate is most qualified for and most likely to get "
         f"an interview at. Score each 0-10 and give a one-line reason (max 15 words). Best first.\n\n{listing}",
         Ranking, model=FAST_MODEL, effort="low").picks
-    return [dict(jobs[p.index], score=p.score, why=p.why) for p in picks if 0 <= p.index < len(jobs)][:n]
+    seen = set()  # Claude sometimes lists a job twice
+    picks = [p for p in picks if 0 <= p.index < len(jobs) and not (p.index in seen or seen.add(p.index))]
+    return [dict(jobs[p.index], score=p.score, why=p.why) for p in picks][:n]
 
 
 class Posting(BaseModel):
@@ -139,11 +150,11 @@ class FormPlan(BaseModel):
     unknown: list[int]
 
 
-def map_fields(job, fields, answers):
-    """What to put in each form field. Required fields we can't answer truthfully come back in `unknown`."""
+def _applicant(answers):
+    """The prompt prefix every form-filling call shares (so it's cached once for all of them): profile, resume, rules
+    and saved answers. Job, posting and fields change and go after it."""
     profile = {k: v for k, v in PROFILE.items() if k not in ("resume_text", "search_terms", "experience", "skills")}
-    # Same for every application, so it's cached; job, answers and fields change and go after it.
-    stable = (
+    return (
         "You are filling out internship applications for this applicant.\n\n"
         f"Applicant profile: {json.dumps(profile, default=str)}\n\n"
         f"Resume:\n{PROFILE.get('resume_text', '')}\n\n"
@@ -151,19 +162,45 @@ def map_fields(job, fields, answers):
         "- Only use facts from the profile, resume or earlier answers. Never invent facts.\n"
         "- Questions that restate a profile fact (graduation date, school, degree, work authorization) are "
         "answerable: reformat the fact to fit the field (e.g. April 2028 -> 04/2028 or 2028-04-30).\n"
+        "- Dates in text boxes: follow the field's placeholder format; with none, use MM/DD/YYYY.\n"
         "- For fields with options, value must be exactly one of the options "
         "(checkbox groups: comma-separate several).\n"
         "- Self-identification questions with no profile answer: pick the decline/prefer-not-to-say option.\n"
-        "- Short free-text questions like 'why this company': 2-3 honest sentences grounded in the resume.\n"
+        "- Short free-text questions like 'why this company': 2-3 honest sentences grounded in the resume, and in "
+        "the job posting when one is given (name what the team actually does; no generic praise).\n"
         "- GPA: fill it only when the field is required; leave optional GPA fields out.\n"
         "- Skip file fields. Skip optional fields you can't answer.\n"
         "- Put the index of every required field you can't answer from these facts in `unknown`.\n\n"
         # Saved answers change only when you answer something new, so they're cached too (they're most of the input).
         f"Answers the applicant gave to earlier application questions: {json.dumps(answers)}"
     )
-    keep = ("index", "type", "label", "options", "required")
+
+
+def map_fields(job, fields, answers, posting=""):
+    """What to put in each form field. Required fields we can't answer truthfully come back in `unknown`.
+    `posting` is the job ad's text, passed when there are free-text questions to ground the answers in."""
+    keep = ("index", "type", "label", "options", "required", "placeholder")
     return _ask(
         "map_fields",
         f"Job: {job['title']} at {job['company']}.\n\n"
-        f"Form fields: {json.dumps([{k: f[k] for k in keep} for f in fields])}",
-        FormPlan, cached=stable)
+        + (f"Job posting:\n{posting[:6000]}\n\n" if posting else "")
+        + f"Form fields: {json.dumps([{k: f[k] for k in keep if k == 'index' or f.get(k)} for f in fields])}",
+        FormPlan, cached=_applicant(answers))
+
+
+class CoverLetter(BaseModel):
+    paragraphs: list[str]
+
+
+def cover_letter(job, posting, answers):
+    """A short cover letter for this job, as paragraphs (no greeting or sign-off: the PDF adds those)."""
+    return _ask(
+        "cover_letter",
+        f"Write a cover letter for {job['title']} at {job['company']}.\n\n"
+        + (f"Job posting:\n{posting[:6000]}\n\n" if posting else "")
+        + "3 short paragraphs, 200-300 words in all, plain and specific: why this role and team (from the posting), "
+          "the 2-3 most relevant things the applicant has done (from the resume, with real numbers where the resume "
+          "has them), and availability (term, start date) from the profile. Only facts from the profile, resume and "
+          "answers; no invented skills, no flattery, no clichés like 'I am writing to express my interest'. "
+          "No greeting, no sign-off, no placeholders.",
+        CoverLetter, cached=_applicant(answers)).paragraphs

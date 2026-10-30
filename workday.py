@@ -6,6 +6,7 @@
 We sign in (or make an account with your email + WORKDAY_PASSWORD), upload the resume so Workday
 prefills what it can, fill each page with apply.fill_form, and stop at Review for your OK.
 """
+import asyncio
 import contextlib
 import logging
 import re
@@ -13,9 +14,9 @@ from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
 
-from apply import SUCCESS, _wait_count, fill_form, open_page, resume_path
+from apply import SUCCESS, _wait_count, fill_form, open_page, resume_path, settle
 from config import PROFILE, env
-from store import get_setting, set_setting
+from store import get_setting, set_setting, set_status
 
 log = logging.getLogger(__name__)
 WORKDAY = re.compile(r"\.myworkdayjobs\.com/|\.myworkdaysite\.com/")
@@ -45,7 +46,7 @@ async def _press(page, automation_id):
     # Workday lays an invisible "click_filter" div over its buttons. A forced click lands on it,
     # which is what Workday listens to.
     await _id(page, automation_id).click(force=True)
-    await page.wait_for_load_state("networkidle")
+    await settle(page)
     await page.wait_for_timeout(1500)
 
 
@@ -107,7 +108,7 @@ async def _signed_in(page):
 async def _open_application(page, url):
     """Job posting -> Apply -> Autofill with Resume. Lands on sign-in, or the wizard if already signed in."""
     if url not in page.url:
-        await page.goto(url, wait_until="networkidle", timeout=60000)
+        await settle(page, url)
     if await _visible(page, "legalNoticeAcceptButton"):
         await _press(page, "legalNoticeAcceptButton")
     if not await _visible(page, "adventureButton", 5000):
@@ -215,7 +216,7 @@ async def _add_experience(page):
 
 async def apply(job, ask, confirm, stuck):
     """Same contract as apply.apply."""
-    resume = resume_path()
+    resume = resume_path(job)
     if not env("WORKDAY_PASSWORD"):
         raise RuntimeError("set WORKDAY_PASSWORD in .env (8+ characters with upper, lower, number and symbol)")
     async with async_playwright() as p:
@@ -225,13 +226,15 @@ async def apply(job, ask, confirm, stuck):
             await _sign_in(page, ask, job["url"])
             for _ in range(MAX_PAGES):
                 if "Something went wrong" in await page.inner_text("body"):  # Workday's own hiccup; a reload clears it
-                    await page.reload(wait_until="networkidle")
+                    await page.reload()
+                    await settle(page)
                     await page.wait_for_timeout(3000)
                 step = await _step(page)
                 if re.search(r"review", step, re.I):
                     await _next_ready(page)  # so the screenshot shows the summary, not a spinner
                     if not await confirm(await page.screenshot(full_page=True)):
                         return "cancelled"
+                    set_status(job["id"], "submitting")  # from here a restart can't tell whether it went through
                     await _next(page)  # labelled Submit on this page
                     await page.wait_for_timeout(4000)
                     if SUCCESS.search(await page.inner_text("body")):
@@ -264,6 +267,8 @@ async def apply(job, ask, confirm, stuck):
                 if await _step(page) == step:
                     raise RuntimeError(f"still on '{step}' after Save and Continue")
             raise RuntimeError(f"no Review page after {MAX_PAGES} pages")
+        except asyncio.TimeoutError:  # a question or the Submit check went unanswered for hours (asyncio's, not Playwright's)
+            reason = f"No answer from you for {env('ANSWER_TIMEOUT_HOURS', '6')} hours, so I stopped here"
         except Exception as e:
             log.exception("workday %s", job["url"])
             reason = f"Workday: {str(e)[:300]}"
