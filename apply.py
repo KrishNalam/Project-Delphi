@@ -21,6 +21,11 @@ from config import PROFILE, ROOT, env
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
 DISPLAY = ":99"  # virtual screen for the phone view (see bot.start_phone_view)
+# Job postings are untrusted pages, so they open in Google Chrome (apt updates it) with its sandbox on. Playwright's
+# own Chromium lags Chrome's security fixes and Playwright starts it unsandboxed; BROWSER_CHANNEL=chromium plus
+# ALLOW_UNSANDBOXED_BROWSER=1 goes back to that, if you accept the risk.
+BROWSER_CHANNEL = env("BROWSER_CHANNEL", "chrome")
+UNSANDBOXED = env("ALLOW_UNSANDBOXED_BROWSER") == "1"
 SUPPORTED = re.compile(r"greenhouse\.io|lever\.co|ashbyhq\.com")
 # Single tick boxes: agreements get ticked, promotions stay off, the site's own on/off settings are left alone.
 CONSENT = re.compile(r"understand|agree|acknowledge|consent|accept|certify|confirm|attest|terms|privacy|allow|"
@@ -135,12 +140,19 @@ def resume_path():
     return resume
 
 
+def browser_options(**options):
+    """Keyword arguments for every chromium.launch(): the patched browser, sandboxed."""
+    return {"channel": None if BROWSER_CHANNEL == "chromium" else BROWSER_CHANNEL,
+            "chromium_sandbox": not UNSANDBOXED, **options}
+
+
 async def open_page(p, url):
     if env("VNC_PASSWORD"):  # draw on the display bot.py shares to your phone
-        browser = await p.chromium.launch(headless=False, env={**os.environ, "DISPLAY": DISPLAY},
-                                          args=["--window-position=0,0", "--window-size=1280,900"])
+        browser = await p.chromium.launch(**browser_options(
+            headless=False, env={**os.environ, "DISPLAY": DISPLAY},
+            args=["--window-position=0,0", "--window-size=1280,900"]))
     else:
-        browser = await p.chromium.launch(headless=env("HEADLESS", "1") == "1")
+        browser = await p.chromium.launch(**browser_options(headless=env("HEADLESS", "1") == "1"))
     page = await browser.new_page()
     page.set_default_timeout(10000)  # a widget that won't take a click fails fast instead of hanging 30s
     await page.goto(url, wait_until="networkidle", timeout=60000)
