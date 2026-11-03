@@ -8,6 +8,10 @@ DIR=$PWD
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install -q -r requirements.txt
 .venv/bin/playwright install chromium >/dev/null || .venv/bin/playwright install --with-deps chromium
+# Forms open in Google Chrome with its sandbox on (see BROWSER_CHANNEL in apply.py); apt keeps it patched.
+if ! grep -qs '^BROWSER_CHANNEL=chromium' .env && ! command -v google-chrome >/dev/null; then
+    .venv/bin/playwright install chrome || echo "Couldn't install Google Chrome (needs sudo): run '.venv/bin/playwright install chrome'"
+fi
 
 if ! .venv/bin/python bot.py --check; then
     echo "Fix the above, then run ./deploy.sh again. (The service isn't installed until the check passes.)"

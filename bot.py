@@ -812,10 +812,13 @@ def check():
         notes.append("Quercus scanning on")
     try:
         with sync_playwright() as p:
-            p.chromium.launch().close()
+            p.chromium.launch(**apply.browser_options()).close()
     except Exception as e:
-        problems.append(f"Playwright's Chromium won't start ({str(e).splitlines()[0]}): "
-                        ".venv/bin/playwright install --with-deps chromium")
+        problems.append(f"The browser ({apply.BROWSER_CHANNEL}, sandbox {'off' if apply.UNSANDBOXED else 'on'}) "
+                        f"won't start ({str(e).splitlines()[0]}): install Google Chrome with "
+                        "'.venv/bin/playwright install chrome' (needs sudo). Playwright's own Chromium is missing "
+                        "security fixes and can't use its sandbox on Ubuntu; to run it anyway, set "
+                        "BROWSER_CHANNEL=chromium and ALLOW_UNSANDBOXED_BROWSER=1 in .env")
     if env("VNC_PASSWORD") and not all(map(shutil.which, ("Xvfb", "x11vnc", "websockify"))):
         problems.append("VNC_PASSWORD is set, so the phone view needs: sudo apt install xvfb x11vnc novnc")
     for note in notes:

@@ -25,7 +25,7 @@ sources ─► filter ─► rank (Claude) ─► Telegram digest ─► [Apply]
 
 ```
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/playwright install --with-deps chromium
+.venv/bin/playwright install --with-deps chromium chrome   # Chrome needs sudo; apt upgrade keeps it patched
 cp .env.example .env && cp profile.example.yaml profile.yaml   # fill both in
 ```
 
