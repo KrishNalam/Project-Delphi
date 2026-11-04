@@ -13,15 +13,46 @@ NO_SPONSOR = re.compile(
 )
 
 
-def keep(job, countries, needs_us_sponsorship=True):
-    """Internship-ish title, in an enabled country, and (for the US) not ruling out sponsorship."""
+DEGREES = [("phd", r"ph\.?d|doctor"), ("mba", r"mba"), ("master", r"master|m\.?sc|m\.?eng|m\.?a\b|m\.?s\b"),
+           ("bachelor", r"bachelor|undergrad|b\.?sc|b\.?eng|b\.?a\b|b\.?s\b|bcomm?|bmath"),
+           ("associate", r"associate")]
+
+
+def degree_kind(text):
+    """'Bachelor's', 'BSc', 'undergrad' -> 'bachelor'; 'Ph.D' -> 'phd'. Unknown wording stays as typed."""
+    low = text.lower()
+    return next((kind for kind, pattern in DEGREES if re.search(rf"\b({pattern})", low)), low.strip())
+
+
+def keep(job, countries, needs_us_sponsorship=True, degree=None, terms=()):
+    """Internship-ish title, in an enabled country, and (for the US) not ruling out sponsorship. With `degree`
+    ("Bachelor's") or `terms` (["Summer 2027"]) from the profile, listings that say they're for other degrees
+    (PhD-only) or other terms are dropped; ones that don't say are kept."""
     if not INTERN.search(job["title"]):
+        return False
+    if degree and job.get("degrees") and degree_kind(degree) not in {degree_kind(d) for d in job["degrees"]}:
+        return False
+    listed = [part.strip() for t in job.get("terms", []) for part in re.split(r"[/,]", t.lower())]  # "Spring/Summer"
+    # "Summer" (vanshb03's season) and "Summer 2027" (Simplify's term) match either way round.
+    if terms and listed and not any(a in b or b in a for a in (t.lower() for t in terms) for b in listed):
         return False
     ca_ok = "canada" in countries
     us_ok = "usa" in countries and not (needs_us_sponsorship and (
         job["sponsorship"] in BAD_SPONSORSHIP or NO_SPONSOR.search(job["description"])))
     places = set(job["countries"])
     return ("canada" in places and ca_ok) or ("usa" in places and us_ok) or (None in places and (ca_ok or us_ok))
+
+def blocked(job, terms):
+    """The /block term that rules this job out: whole words of the company name ("amazon" covers Amazon Web
+    Services) or of the title ("phd"). Else None."""
+    company, title = (f" {block_term(job[k])} " for k in ("company", "title"))
+    return next((t for t in terms if f" {t} " in company or f" {t} " in title), None)
+
+
+def block_term(text):
+    """How /block stores what you typed: lowercase words, punctuation as spaces ("Ph.D" -> "ph d")."""
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
 
 # Words every internship title shares; they say nothing about fit.
 GENERIC = {"intern", "interns", "internship", "co", "op", "coop", "student", "summer", "fall", "winter", "spring",
