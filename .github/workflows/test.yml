@@ -14,5 +14,6 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m playwright install --with-deps chromium
+      - run: command -v google-chrome || python -m playwright install chrome
       - run: python test_delphi.py
       - run: python test_forms.py

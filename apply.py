@@ -24,6 +24,20 @@ from store import canonical, set_status
 log = logging.getLogger(__name__)
 ANSWERS = ROOT / "answers.json"  # label -> your answer, reused on every later form
 DISPLAY = ":99"  # virtual screen for the phone view (see bot.start_phone_view)
+# Job postings are untrusted pages. Playwright's own Chromium lags Chrome's security fixes (1.64.1 ships
+# 156.0.8078.4, before Chrome's late-October 2026 critical fixes) and Playwright starts it with the sandbox off.
+# So every browser is Google Chrome (apt keeps it patched) with the sandbox on. BROWSER_CHANNEL=chromium plus
+# ALLOW_UNSANDBOXED_BROWSER=1 brings back the old setup, if you accept the risk.
+BROWSER_CHANNEL = env("BROWSER_CHANNEL", "chrome")
+UNSANDBOXED = env("ALLOW_UNSANDBOXED_BROWSER") == "1"
+
+
+def browser_options(**options):
+    """Keyword arguments for every chromium.launch(): the patched browser, sandboxed."""
+    return {"channel": None if BROWSER_CHANNEL == "chromium" else BROWSER_CHANNEL,
+            "chromium_sandbox": not UNSANDBOXED, **options}
+
+
 SUPPORTED = re.compile(r"greenhouse\.io|lever\.co|ashbyhq\.com|apply\.workable\.com")
 # Single tick boxes: agreements get ticked, promotions stay off, the site's own on/off settings are left alone.
 CONSENT = re.compile(r"understand|agree|acknowledge|consent|accept|certify|confirm|attest|terms|privacy|allow|"
@@ -170,7 +184,7 @@ def direct_url(url):
 async def embedded_form(url):
     """For a company page we can't fill: the one supported form it embeds or links to, else None."""
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        browser = await p.chromium.launch(**browser_options())
         page = await browser.new_page()
         try:
             await settle(page, url)
@@ -215,10 +229,11 @@ def resume_path(job=None):
 
 async def open_page(p, url):
     if env("VNC_PASSWORD"):  # draw on the display bot.py shares to your phone
-        browser = await p.chromium.launch(headless=False, env={**os.environ, "DISPLAY": DISPLAY},
-                                          args=["--window-position=0,0", "--window-size=1280,900"])
+        browser = await p.chromium.launch(**browser_options(
+            headless=False, env={**os.environ, "DISPLAY": DISPLAY},
+            args=["--window-position=0,0", "--window-size=1280,900"]))
     else:
-        browser = await p.chromium.launch(headless=env("HEADLESS", "1") == "1")
+        browser = await p.chromium.launch(**browser_options(headless=env("HEADLESS", "1") == "1"))
     page = await browser.new_page()
     page.set_default_timeout(10000)  # a widget that won't take a click fails fast instead of hanging 30s
     await settle(page, url)
@@ -595,7 +610,7 @@ async def cover_letter_pdf(page, job, answers):
     path = ROOT / "cover_letters" / f"{slug}.pdf"
     path.parent.mkdir(exist_ok=True)
     # A separate headless browser: printing to PDF doesn't work in the visible one the phone view uses.
-    printer = await page.context.browser.browser_type.launch()
+    printer = await page.context.browser.browser_type.launch(**browser_options())
     try:
         doc = await printer.new_page()
         await doc.set_content(html)
